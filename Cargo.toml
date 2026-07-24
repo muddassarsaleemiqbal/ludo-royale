@@ -1,0 +1,61 @@
+[workspace]
+members = [
+    "crates/ludo-domain",
+    "crates/ludo-application",
+    "crates/ludo-ai",
+    "crates/ludo-infrastructure",
+    "crates/ludo-presentation",
+    "crates/ludo-desktop",
+    "crates/ludo-simulation",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+authors = ["Ludo contributors"]
+
+[workspace.dependencies]
+flume = "0.12"
+gpui = "0.2.2"
+gpui-component = "0.5.1"
+rand = "0.9"
+rayon = "1.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+style = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+redundant_clone = "deny"
+rc_mutex = "deny"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.dev.package."*"]
+opt-level = 1

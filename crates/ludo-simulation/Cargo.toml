@@ -1,0 +1,15 @@
+[package]
+name = "ludo-simulation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ludo-ai = { path = "../ludo-ai" }
+ludo-domain = { path = "../ludo-domain" }
+rand.workspace = true
+rayon.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "ludo-presentation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ludo-application = { path = "../ludo-application" }
+ludo-domain = { path = "../ludo-domain" }
+
+[lints]
+workspace = true
