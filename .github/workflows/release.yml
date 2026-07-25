@@ -101,14 +101,18 @@ jobs:
       - name: Build both macOS architectures
         shell: bash
         run: |
-          cargo build -p ludo-desktop --release --locked --target aarch64-apple-darwin
-          cargo build -p ludo-desktop --release --locked --target x86_64-apple-darwin
-          mkdir -p target/universal-apple-darwin/release
-          lipo -create \
-            target/aarch64-apple-darwin/release/ludo-desktop \
-            target/x86_64-apple-darwin/release/ludo-desktop \
-            -output target/universal-apple-darwin/release/ludo-desktop
-          lipo -verify_arch arm64 x86_64 target/universal-apple-darwin/release/ludo-desktop
+            cargo build -p ludo-desktop --release --locked --target aarch64-apple-darwin
+            cargo build -p ludo-desktop --release --locked --target x86_64-apple-darwin
+            mkdir -p target/universal-apple-darwin/release
+            lipo -create \
+              target/aarch64-apple-darwin/release/ludo-desktop \
+              target/x86_64-apple-darwin/release/ludo-desktop \
+              -output target/universal-apple-darwin/release/ludo-desktop
+            
+            archs="$(lipo -archs target/universal-apple-darwin/release/ludo-desktop)"
+            echo "Universal binary contains: $archs"
+            echo "$archs" | grep -qw arm64
+            echo "$archs" | grep -qw x86_64
 
       - name: Enable Apple distribution signing
         if: env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != ''
