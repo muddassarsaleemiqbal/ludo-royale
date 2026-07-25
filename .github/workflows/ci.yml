@@ -29,6 +29,13 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # Rodio uses CPAL's mandatory ALSA backend when ludo-infrastructure is
+      # compiled on Linux. Keep this platform package scoped to the core job.
+      - name: Install Linux audio build dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libasound2-dev
+
       - name: Set up Rust and shared dependency cache
         uses: ./.github/actions/setup-rust
         with:

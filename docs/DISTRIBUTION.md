@@ -65,6 +65,10 @@ action centralizes toolchain setup and uses dependency-only Rust caches across
 runs; it deliberately excludes workspace outputs and incremental artifacts to
 keep cache transfer time and the repository's cache footprint bounded.
 
+The Ubuntu core job installs `libasound2-dev` because `ludo-infrastructure`
+uses Rodio, whose CPAL backend requires ALSA development files when compiled on
+Linux. This system package is deliberately scoped to that one job.
+
 There is no separate `cargo check` immediately before Clippy because Clippy
 already invokes the Rust compiler. Likewise, `cargo test` is the Windows
 compiler gate because Cargo must compile every selected target before running
