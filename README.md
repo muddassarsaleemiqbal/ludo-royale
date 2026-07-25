@@ -65,10 +65,11 @@ cargo test --workspace --all-targets --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 ```
 
-GitHub Actions runs formatting, compiler, Clippy, test, documentation, Windows,
-and dependency-security checks for every push and pull request. Once a
-`main`-branch push passes, the release workflow increments the patch version
-and publishes macOS and Windows installers.
+GitHub Actions runs parallel Rust-core, macOS desktop, Windows desktop/network,
+and dependency-security checks for every push and pull request. Related steps
+share smart dependency caches without re-running redundant compiler passes.
+Once a `main`-branch push passes, the release workflow increments the patch
+version and publishes macOS and Windows installers.
 
 See [the distribution guide](docs/DISTRIBUTION.md) for signing secrets,
 repository settings, release behavior, and local packaging commands.

@@ -27,8 +27,9 @@ Before the first release:
 1. Set `main` as the default branch.
 2. In **Settings → Actions → General → Workflow permissions**, allow read and
    write access so the release workflow can commit, tag, and create a release.
-3. Require the `CI / Format, Clippy, tests, and docs`,
-   `CI / Windows compiler and test check`, and
+3. Require the `CI / Rust core — compiler, Clippy, tests, and docs`,
+   `CI / macOS desktop — compiler, Clippy, tests, and docs`,
+   `CI / Windows desktop/network — compiler and tests`, and
    `CI / Dependency security audit` checks in the `main` branch ruleset.
 4. Enable private vulnerability reporting under **Settings → Security**.
 
@@ -48,6 +49,26 @@ dependencies. Two documented `quick-xml` advisories are temporarily ignored in
 only while building GPUI's optional Linux backend, parses trusted xcb-proto
 build files, and is not present in either distributed application. Existing
 unmaintained GPUI transitive crates remain visible as warnings.
+
+## CI performance model
+
+Public repositories receive GitHub's stronger standard machines at no charge.
+CI uses the 4-CPU/16-GB Ubuntu runner for platform-independent crates, the
+4-CPU/14-GB `macos-15-intel` runner for GPUI's macOS target, and the
+4-CPU/16-GB Windows runner for the desktop and LAN targets.
+
+The core, macOS, Windows, and security jobs run in parallel. Each platform keeps
+related compiler, Clippy, test, and documentation steps in one job so they
+share that runner's Cargo target directory. Binary build artifacts cannot be
+shared safely between operating systems. The local `setup-rust` composite
+action centralizes toolchain setup and uses dependency-only Rust caches across
+runs; it deliberately excludes workspace outputs and incremental artifacts to
+keep cache transfer time and the repository's cache footprint bounded.
+
+There is no separate `cargo check` immediately before Clippy because Clippy
+already invokes the Rust compiler. Likewise, `cargo test` is the Windows
+compiler gate because Cargo must compile every selected target before running
+it. This preserves compiler coverage without compiling the same targets twice.
 
 ## Apple signing and notarization
 

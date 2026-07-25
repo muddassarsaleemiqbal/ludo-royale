@@ -61,7 +61,7 @@ jobs:
     name: Universal macOS DMG
     needs: prepare
     if: needs.prepare.outputs.skip != 'true'
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 90
     env:
       APP_VERSION: ${{ needs.prepare.outputs.version }}
@@ -85,8 +85,8 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin/cargo-packager
             target
-          key: release-cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'tools/**/Cargo.toml', 'rust-toolchain.toml') }}-${{ env.CARGO_PACKAGER_VERSION }}
-          restore-keys: release-cargo-${{ runner.os }}-
+          key: release-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'tools/**/Cargo.toml', 'rust-toolchain.toml') }}-${{ env.CARGO_PACKAGER_VERSION }}
+          restore-keys: release-cargo-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Apply release version
         shell: bash
@@ -187,8 +187,8 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin/cargo-packager.exe
             target
-          key: release-cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'tools/**/Cargo.toml', 'rust-toolchain.toml') }}-${{ env.CARGO_PACKAGER_VERSION }}
-          restore-keys: release-cargo-${{ runner.os }}-
+          key: release-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'tools/**/Cargo.toml', 'rust-toolchain.toml') }}-${{ env.CARGO_PACKAGER_VERSION }}
+          restore-keys: release-cargo-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Apply release version
         shell: pwsh
@@ -299,8 +299,8 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin/cargo-cyclonedx
             target
-          key: cargo-cyclonedx-${{ runner.os }}-0.5.9-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-cyclonedx-${{ runner.os }}-0.5.9-
+          key: cargo-cyclonedx-${{ runner.os }}-${{ runner.arch }}-0.5.9-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-cyclonedx-${{ runner.os }}-${{ runner.arch }}-0.5.9-
 
       - name: Download installers
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

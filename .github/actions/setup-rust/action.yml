@@ -1,0 +1,33 @@
+name: Set up cached Rust
+description: Activate the pinned toolchain and restore dependency-only Cargo caches.
+
+inputs:
+  shared-key:
+    description: Stable cache scope for this class of job.
+    required: true
+  cache-targets:
+    description: Cache compiled dependency artifacts in target.
+    required: false
+    default: "true"
+  cache-bin:
+    description: Cache Cargo-installed command-line tools.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Activate pinned Rust toolchain
+      shell: bash
+      run: |
+        rustc --version --verbose
+        cargo --version
+
+    - name: Restore smart Rust cache
+      uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+      with:
+        shared-key: ${{ inputs.shared-key }}
+        cache-targets: ${{ inputs.cache-targets }}
+        cache-bin: ${{ inputs.cache-bin }}
+        cache-workspace-crates: "false"
+        save-if: ${{ github.ref == 'refs/heads/main' }}
