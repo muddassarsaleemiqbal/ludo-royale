@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  core:
+    name: Rust core — compiler, Clippy, tests, and docs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Rodio uses CPAL's mandatory ALSA backend when ludo-infrastructure is
+      # compiled on Linux. Keep this platform package scoped to the core job.
+      - name: Install Linux audio build dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libasound2-dev
+
+      - name: Set up Rust and shared dependency cache
+        uses: ./.github/actions/setup-rust
+        with:
+          shared-key: core
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      # Clippy invokes rustc, so this is both the core compiler and lint gate.
+      - name: Core compiler and Clippy check
+        run: >-
+          cargo clippy --workspace --exclude ludo-desktop
+          --all-targets --all-features --locked -- -D warnings
+
+      - name: Core tests
+        run: >-
+          cargo test --workspace --exclude ludo-desktop
+          --all-targets --all-features --locked
+
+      - name: Core documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: >-
+          cargo doc --workspace --exclude ludo-desktop
+          --all-features --no-deps --locked
+
+  macos:
+    name: macOS desktop — compiler, Clippy, tests, and docs
+    # Public repositories get 4 CPUs / 14 GB on Intel versus 3 CPUs / 7 GB on M1.
+    runs-on: macos-15-intel
+    timeout-minutes: 40
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Rust and shared dependency cache
+        uses: ./.github/actions/setup-rust
+        with:
+          shared-key: macos-desktop
+
+      # Keep these steps in one job so each step reuses the same Cargo target tree.
+      - name: macOS desktop compiler and Clippy check
+        run: >-
+          cargo clippy -p ludo-desktop
+          --all-targets --all-features --locked -- -D warnings
+
+      - name: macOS desktop tests
+        run: >-
+          cargo test -p ludo-desktop
+          --all-targets --all-features --locked
+
+      - name: macOS desktop documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc -p ludo-desktop --all-features --no-deps --locked
+
+  windows:
+    name: Windows desktop/network — compiler and tests
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Rust and shared dependency cache
+        uses: ./.github/actions/setup-rust
+        with:
+          shared-key: windows-desktop-network
+
+      # cargo test compiles every selected target before executing it.
+      - name: Windows compiler and tests
+        run: >-
+          cargo test -p ludo-network -p ludo-desktop
+          --all-targets --all-features --locked
+
+  security:
+    name: Dependency security audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Rust and shared tool cache
+        uses: ./.github/actions/setup-rust
+        with:
+          shared-key: audit-0.22.2
+          cache-targets: "false"
+          cache-bin: "true"
+
+      - name: Install cargo-audit
+        run: command -v cargo-audit >/dev/null || cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit locked dependencies
+        run: cargo audit

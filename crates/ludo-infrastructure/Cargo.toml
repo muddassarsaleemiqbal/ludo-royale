@@ -6,9 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+flume.workspace = true
 ludo-application = { path = "../ludo-application" }
 ludo-domain = { path = "../ludo-domain" }
 rand.workspace = true
+rodio.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [lints]

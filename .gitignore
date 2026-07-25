@@ -1,4 +1,13 @@
 /target
+/dist
 /.idea
 .DS_Store
+*.cdx.json
+*.dmg
+*.msi
+*-setup.exe
 *.ludo.json
+*.ludo-replay.json
+/ludo-save.json
+/ludo-profiles.json
+/ludo-rule-presets.json

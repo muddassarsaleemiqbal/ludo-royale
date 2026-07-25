@@ -6,7 +6,9 @@ members = [
     "crates/ludo-infrastructure",
     "crates/ludo-presentation",
     "crates/ludo-desktop",
+    "crates/ludo-network",
     "crates/ludo-simulation",
+    "tools/xtask",
 ]
 resolver = "3"
 
@@ -16,13 +18,17 @@ edition = "2024"
 rust-version = "1.97.1"
 license = "MIT OR Apache-2.0"
 authors = ["Ludo contributors"]
+description = "A fast, native, feature-complete Ludo board game"
 
 [workspace.dependencies]
 flume = "0.12"
 gpui = "0.2.2"
 gpui-component = "0.5.1"
-rand = "0.9"
+if-addrs = "0.15"
+mdns-sd = "0.20.2"
+rand = "0.10"
 rayon = "1.11"
+rodio = { version = "0.22.2", default-features = false, features = ["playback"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

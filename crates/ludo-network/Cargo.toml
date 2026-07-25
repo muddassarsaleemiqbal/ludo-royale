@@ -1,14 +1,22 @@
 [package]
-name = "ludo-application"
+name = "ludo-network"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+flume.workspace = true
+if-addrs.workspace = true
 ludo-domain = { path = "../ludo-domain" }
+mdns-sd.workspace = true
+rand.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+proptest = "1"
 
 [lints]
 workspace = true
