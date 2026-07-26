@@ -5,12 +5,6 @@ use std::sync::Arc;
 use ludo_domain::{DiceValue, DomainError, GameCommand, GameEvent, GameState, TokenId};
 use thiserror::Error;
 
-/// Supplies dice rolls to application use cases.
-pub trait DiceSource: Send + Sync {
-    /// Produces one valid roll.
-    fn roll(&self) -> DiceValue;
-}
-
 /// Persists complete match snapshots.
 pub trait GameRepository: Send + Sync {
     /// Stores the latest snapshot.
@@ -42,17 +36,15 @@ pub enum ApplicationError {
 /// Stateful application facade used by any presentation technology.
 pub struct GameSession {
     state: GameState,
-    dice: Arc<dyn DiceSource>,
     repository: Option<Arc<dyn GameRepository>>,
 }
 
 impl GameSession {
     /// Creates a session around a new or restored match.
     #[must_use]
-    pub fn new(state: GameState, dice: Arc<dyn DiceSource>) -> Self {
+    pub const fn new(state: GameState) -> Self {
         Self {
             state,
-            dice,
             repository: None,
         }
     }
@@ -80,8 +72,7 @@ impl GameSession {
     /// # Errors
     ///
     /// Returns a domain error when the current phase does not allow rolling.
-    pub fn roll(&mut self) -> Result<Vec<GameEvent>, ApplicationError> {
-        let value = self.dice.roll();
+    pub fn roll(&mut self, value: DiceValue) -> Result<Vec<GameEvent>, ApplicationError> {
         self.apply(GameCommand::Roll(value))
     }
 
@@ -145,14 +136,6 @@ mod tests {
 
     use super::*;
 
-    struct FixedDice(DiceValue);
-
-    impl DiceSource for FixedDice {
-        fn roll(&self) -> DiceValue {
-            self.0
-        }
-    }
-
     #[derive(Default)]
     struct MemoryRepository(Mutex<Option<GameState>>);
 
@@ -180,9 +163,8 @@ mod tests {
         };
         let six = DiceValue::new(6).unwrap_or_else(|| std::process::abort());
         let repository = Arc::new(MemoryRepository::default());
-        let mut session =
-            GameSession::new(state, Arc::new(FixedDice(six))).with_repository(repository.clone());
-        assert!(session.roll().is_ok());
+        let mut session = GameSession::new(state).with_repository(repository.clone());
+        assert!(session.roll(six).is_ok());
         assert!(matches!(
             session.state().phase,
             TurnPhase::AwaitingMove { .. }

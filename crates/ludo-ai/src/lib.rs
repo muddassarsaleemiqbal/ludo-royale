@@ -1,11 +1,13 @@
 //! Parallel computer-player evaluation.
 
+#[cfg(feature = "native-worker")]
 use flume::{Receiver, Sender};
 use ludo_domain::{GameCommand, GameEvent, GameState, PlayerId, TokenId, TokenPosition, TurnPhase};
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 /// Difficulty controls the amount of parallel look-ahead work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Difficulty {
     /// Direct tactical heuristic.
     Easy,
@@ -16,7 +18,7 @@ pub enum Difficulty {
 }
 
 /// Revision-tagged immutable AI request.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BotRequest {
     /// State snapshot.
     pub state: GameState,
@@ -25,7 +27,7 @@ pub struct BotRequest {
 }
 
 /// Worker result, safe to discard when its revision is stale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BotDecision {
     /// Source state revision.
     pub revision: u64,
@@ -75,11 +77,13 @@ impl ParallelBot {
 }
 
 /// Long-lived non-blocking Rayon-backed AI adapter.
+#[cfg(feature = "native-worker")]
 pub struct BotWorker {
     sender: Sender<BotRequest>,
     receiver: Receiver<BotDecision>,
 }
 
+#[cfg(feature = "native-worker")]
 impl BotWorker {
     /// Creates a bounded worker. New requests are evaluated on Rayon's global pool.
     #[must_use]
@@ -121,6 +125,7 @@ impl BotWorker {
     }
 }
 
+#[cfg(feature = "native-worker")]
 impl Default for BotWorker {
     fn default() -> Self {
         Self::new()

@@ -1,0 +1,126 @@
+import { ShieldCheck } from "lucide-react";
+import { cn } from "../../lib/cn";
+import type {
+  PlayerColor,
+  TokenPosition,
+  TokenViewModel
+} from "../../game/types";
+
+const TRACK: ReadonlyArray<readonly [number, number]> = [
+  [6,1],[6,2],[6,3],[6,4],[6,5],[5,6],[4,6],[3,6],[2,6],[1,6],[0,6],[0,7],[0,8],
+  [1,8],[2,8],[3,8],[4,8],[5,8],[6,9],[6,10],[6,11],[6,12],[6,13],[6,14],[7,14],
+  [8,14],[8,13],[8,12],[8,11],[8,10],[8,9],[9,8],[10,8],[11,8],[12,8],[13,8],
+  [14,8],[14,7],[14,6],[13,6],[12,6],[11,6],[10,6],[9,6],[8,5],[8,4],[8,3],
+  [8,2],[8,1],[8,0],[7,0],[6,0]
+];
+
+const COLORS: PlayerColor[] = ["Red", "Green", "Yellow", "Blue"];
+const STARTS = [0, 13, 26, 39];
+const SAFE = new Set(["6:1", "1:8", "8:13", "13:6", "2:6", "6:12", "12:8", "8:2"]);
+
+function coordinate(
+  color: PlayerColor,
+  token: number,
+  position: TokenPosition
+): readonly [number, number] | null {
+  const colorIndex = COLORS.indexOf(color);
+  if (position === "Finished") return null;
+  if (position === "Yard") {
+    const offsets = [[0,0],[0,2],[2,0],[2,2]] as const;
+    const bases = [[2,2],[2,10],[10,10],[10,2]] as const;
+    const base = bases[colorIndex] ?? bases[0];
+    const offset = offsets[token] ?? offsets[0];
+    return [base[0] + offset[0], base[1] + offset[1]];
+  }
+  const progress = position.Path;
+  if (progress < 52) {
+    return TRACK[((STARTS[colorIndex] ?? 0) + progress) % 52] ?? null;
+  }
+  const offset = progress - 52;
+  return [
+    [7, 1 + offset],
+    [1 + offset, 7],
+    [7, 13 - offset],
+    [13 - offset, 7]
+  ][colorIndex] as [number, number];
+}
+
+function cellKind(row: number, column: number) {
+  if (row < 6 && column < 6) return "red-yard";
+  if (row < 6 && column > 8) return "green-yard";
+  if (row > 8 && column > 8) return "yellow-yard";
+  if (row > 8 && column < 6) return "blue-yard";
+  if ((row === 7 && column >= 1 && column <= 5) || (row === 6 && column === 1)) return "red-home";
+  if ((column === 7 && row >= 1 && row <= 5) || (row === 1 && column === 8)) return "green-home";
+  if ((row === 7 && column >= 9 && column <= 13) || (row === 8 && column === 13)) return "yellow-home";
+  if ((column === 7 && row >= 9 && row <= 13) || (row === 13 && column === 6)) return "blue-home";
+  if (row >= 6 && row <= 8 && column >= 6 && column <= 8) return "center";
+  return "track";
+}
+
+function BoardToken({
+  token,
+  onSelect
+}: {
+  token: TokenViewModel;
+  onSelect(token: number): void;
+}) {
+  const point = coordinate(token.color, token.token, token.position);
+  if (!point) return null;
+  return (
+    <button
+      className={cn(
+        "game-token",
+        `token-${token.color.toLowerCase()}`,
+        token.selectable && "is-selectable"
+      )}
+      style={{
+        "--token-row": point[0],
+        "--token-column": point[1]
+      } as React.CSSProperties}
+      disabled={!token.selectable}
+      onClick={() => onSelect(token.token)}
+      aria-label={`Move ${token.color} token ${token.token + 1}`}
+    >
+      <span>{token.token + 1}</span>
+    </button>
+  );
+}
+
+export function LudoBoard({
+  tokens,
+  onSelect
+}: {
+  tokens: TokenViewModel[];
+  onSelect(token: number): void;
+}) {
+  return (
+    <div className="board-frame">
+      <div className="board-glow" />
+      <div className="ludo-board" aria-label="Ludo board">
+        {Array.from({ length: 225 }, (_, index) => {
+          const row = Math.floor(index / 15);
+          const column = index % 15;
+          const safe = SAFE.has(`${row}:${column}`);
+          return (
+            <div
+              className={cn("board-cell", cellKind(row, column))}
+              key={index}
+              aria-hidden="true"
+            >
+              {safe && <ShieldCheck className="safe-mark" />}
+            </div>
+          );
+        })}
+        <div className="home-crown" aria-hidden="true">♛</div>
+        {tokens.map((token) => (
+          <BoardToken
+            key={`${token.player}-${token.token}`}
+            token={token}
+            onSelect={onSelect}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}

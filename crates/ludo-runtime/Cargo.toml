@@ -1,20 +1,18 @@
 [package]
-name = "ludo-desktop"
+name = "ludo-runtime"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-gpui.workspace = true
-gpui-component.workspace = true
-ludo-ai = { path = "../ludo-ai" }
+ludo-ai = { path = "../ludo-ai", default-features = false }
 ludo-application = { path = "../ludo-application" }
 ludo-domain = { path = "../ludo-domain" }
-ludo-infrastructure = { path = "../ludo-infrastructure" }
 ludo-presentation = { path = "../ludo-presentation" }
-tracing.workspace = true
-tracing-subscriber.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

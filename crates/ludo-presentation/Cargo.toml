@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 ludo-application = { path = "../ludo-application" }
 ludo-domain = { path = "../ludo-domain" }
+serde.workspace = true
 
 [lints]
 workspace = true

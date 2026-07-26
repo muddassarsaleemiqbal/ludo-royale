@@ -1,0 +1,24 @@
+[package]
+name = "ludo-tauri"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "ludo_tauri"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+ludo-ai = { path = "../../../crates/ludo-ai" }
+ludo-infrastructure = { path = "../../../crates/ludo-infrastructure" }
+ludo-presentation = { path = "../../../crates/ludo-presentation" }
+ludo-runtime = { path = "../../../crates/ludo-runtime" }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+
+[lints.rust]
+unsafe_code = "forbid"

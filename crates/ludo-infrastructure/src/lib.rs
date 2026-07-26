@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ludo_application::{DiceSource, GameRepository};
+use ludo_application::GameRepository;
 use ludo_domain::{DiceValue, GameState};
 use rand::Rng;
 
@@ -13,8 +13,10 @@ use rand::Rng;
 #[derive(Debug, Default)]
 pub struct RandomDice;
 
-impl DiceSource for RandomDice {
-    fn roll(&self) -> DiceValue {
+impl RandomDice {
+    /// Generates one valid native random roll.
+    #[must_use]
+    pub fn roll(&self) -> DiceValue {
         let value = rand::rng().random_range(1..=6);
         DiceValue::new(value).unwrap_or_else(|| std::process::abort())
     }

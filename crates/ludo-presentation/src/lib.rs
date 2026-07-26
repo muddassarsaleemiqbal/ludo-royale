@@ -1,11 +1,12 @@
 //! GUI-neutral view models.
 
 use ludo_domain::{
-    GameState, GameStatus, PlayerColor, PlayerId, TokenId, TokenPosition, TurnPhase,
+    Controller, GameState, GameStatus, PlayerColor, PlayerId, TokenId, TokenPosition, TurnPhase,
 };
+use serde::{Deserialize, Serialize};
 
 /// One token prepared for rendering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenViewModel {
     /// Owner.
     pub player: PlayerId,
@@ -20,7 +21,7 @@ pub struct TokenViewModel {
 }
 
 /// One player card prepared for rendering.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerViewModel {
     /// ID.
     pub id: PlayerId,
@@ -35,7 +36,7 @@ pub struct PlayerViewModel {
 }
 
 /// Complete presentation snapshot with no GUI framework types.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameViewModel {
     /// Player cards.
     pub players: Vec<PlayerViewModel>,
@@ -47,6 +48,12 @@ pub struct GameViewModel {
     pub dice: Option<u8>,
     /// Whether the roll action is available.
     pub can_roll: bool,
+    /// Whether the current input belongs to a local human.
+    pub human_turn: bool,
+    /// Whether platform work is currently outstanding.
+    pub busy: bool,
+    /// User-facing failure from the most recent action.
+    pub error: Option<String>,
     /// Current state revision.
     pub revision: u64,
     /// Winning player, when complete.
@@ -55,6 +62,14 @@ pub struct GameViewModel {
 
 impl From<&GameState> for GameViewModel {
     fn from(state: &GameState) -> Self {
+        Self::new(state, false, None)
+    }
+}
+
+impl GameViewModel {
+    /// Projects a domain snapshot plus portable runtime state.
+    #[must_use]
+    pub fn new(state: &GameState, busy: bool, error: Option<String>) -> Self {
         let current = state.current().player.id;
         let legal = match &state.phase {
             TurnPhase::AwaitingMove { legal_tokens, .. } => legal_tokens.as_slice(),
@@ -106,12 +121,19 @@ impl From<&GameState> for GameViewModel {
                 TurnPhase::AwaitingMove { .. } => format!("{name} — choose a glowing token"),
             }
         };
+        let human_turn = matches!(state.current().player.controller, Controller::Human);
         Self {
             players,
             tokens,
             status,
             dice,
-            can_roll: winner.is_none() && matches!(state.phase, TurnPhase::AwaitingRoll),
+            can_roll: winner.is_none()
+                && !busy
+                && human_turn
+                && matches!(state.phase, TurnPhase::AwaitingRoll),
+            human_turn,
+            busy,
+            error,
             revision: state.revision,
             winner,
         }
