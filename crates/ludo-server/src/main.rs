@@ -29,7 +29,7 @@ use ludo_presentation::GameViewModel;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use tokio::sync::{Mutex, mpsc};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use uuid::Uuid;
@@ -38,7 +38,7 @@ const SESSION_SECONDS: i64 = 60 * 60 * 24 * 30;
 
 #[derive(Clone)]
 struct AppState {
-    db: SqlitePool,
+    db: PgPool,
     online: Arc<Mutex<OnlineState>>,
 }
 
@@ -126,9 +126,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
-    let database_url =
-        env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://ludo-online.db?mode=rwc".to_owned());
-    let db = SqlitePoolOptions::new()
+    let database_url = env::var("DATABASE_URL")?;
+    let db = PgPoolOptions::new()
         .max_connections(10)
         .connect(&database_url)
         .await?;
@@ -147,9 +146,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
-    let address: SocketAddr = env::var("LUDO_SERVER_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
-        .parse()?;
+    let address: SocketAddr = match env::var("LUDO_SERVER_ADDR") {
+        Ok(value) => value.parse()?,
+        Err(_) => {
+            let port = env::var("PORT").unwrap_or_else(|_| "8080".to_owned());
+            format!("0.0.0.0:{port}").parse()?
+        }
+    };
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "online server listening");
     axum::serve(listener, app)
@@ -169,8 +172,8 @@ async fn register(
     let display_name = normalize_name(input.display_name.as_deref().unwrap_or(""))?;
     let password_hash = hash_password(&input.password)?;
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO users (id,email,display_name,password_hash) VALUES (?,?,?,?)")
-        .bind(id.to_string())
+    sqlx::query("INSERT INTO users (id,email,display_name,password_hash) VALUES ($1,$2,$3,$4)")
+        .bind(id)
         .bind(&email)
         .bind(&display_name)
         .bind(password_hash)
@@ -193,8 +196,8 @@ async fn login(
     Json(input): Json<Credentials>,
 ) -> Result<Json<AuthResponse>, ApiError> {
     let email = normalize_email(&input.email)?;
-    let row: (String, String, String, String) =
-        sqlx::query_as("SELECT id,email,display_name,password_hash FROM users WHERE email = ?")
+    let row: (Uuid, String, String, String) =
+        sqlx::query_as("SELECT id,email,display_name,password_hash FROM users WHERE email = $1")
             .bind(email)
             .fetch_optional(&state.db)
             .await?
@@ -207,7 +210,7 @@ async fn login(
     issue_session(
         &state,
         User {
-            id: Uuid::parse_str(&row.0).map_err(|_| ApiError::internal("invalid user id"))?,
+            id: row.0,
             email: row.1,
             display_name: row.2,
         },
@@ -221,7 +224,7 @@ async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Us
 
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<StatusCode, ApiError> {
     let token = bearer(&headers)?;
-    sqlx::query("DELETE FROM sessions WHERE token_hash = ?")
+    sqlx::query("DELETE FROM sessions WHERE token_hash = $1")
         .bind(token_hash(token))
         .execute(&state.db)
         .await?;
@@ -429,9 +432,9 @@ fn player_id(index: u8) -> PlayerId {
 
 async fn issue_session(state: &AppState, user: User) -> Result<Json<AuthResponse>, ApiError> {
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    sqlx::query("INSERT INTO sessions (token_hash,user_id,expires_at) VALUES (?,?,?)")
+    sqlx::query("INSERT INTO sessions (token_hash,user_id,expires_at) VALUES ($1,$2,$3)")
         .bind(token_hash(&token))
-        .bind(user.id.to_string())
+        .bind(user.id)
         .bind(now() + SESSION_SECONDS)
         .execute(&state.db)
         .await?;
@@ -443,8 +446,8 @@ async fn authenticate_header(state: &AppState, headers: &HeaderMap) -> Result<Us
 }
 
 async fn authenticate_token(state: &AppState, token: &str) -> Result<User, ApiError> {
-    let row: (String, String, String) = sqlx::query_as(
-        "SELECT users.id,users.email,users.display_name FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?",
+    let row: (Uuid, String, String) = sqlx::query_as(
+        "SELECT users.id,users.email,users.display_name FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=$1 AND sessions.expires_at>$2",
     )
     .bind(token_hash(token))
     .bind(now())
@@ -452,7 +455,7 @@ async fn authenticate_token(state: &AppState, token: &str) -> Result<User, ApiEr
     .await?
     .ok_or_else(|| ApiError::unauthorized("login required"))?;
     Ok(User {
-        id: Uuid::parse_str(&row.0).map_err(|_| ApiError::internal("invalid user id"))?,
+        id: row.0,
         email: row.1,
         display_name: row.2,
     })
