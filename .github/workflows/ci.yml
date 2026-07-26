@@ -4,39 +4,57 @@ on:
   push:
     branches: ["main"]
   pull_request:
+  merge_group:
   workflow_dispatch:
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
   RUST_BACKTRACE: "1"
 
 jobs:
-  rust:
-    name: Rust quality
-    runs-on: macos-14
+  core:
+    name: Rust core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Linux audio dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libasound2-dev
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: 1.97.1
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+          shared-key: core
       - run: cargo fmt --all --check
-      - run: cargo test --workspace --all-targets --all-features
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: >-
+          cargo clippy --workspace --exclude ludo-tauri
+          --all-targets --all-features --locked -- -D warnings
+      - run: >-
+          cargo test --workspace --exclude ludo-tauri
+          --all-targets --all-features --locked
+      - name: Documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: >-
+          cargo doc --workspace --exclude ludo-tauri
+          --all-features --no-deps --locked
 
   web:
-    name: Web and WASM
+    name: React and WebAssembly
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: pnpm/action-setup@v4
         with:
           version: 11.17.0
@@ -49,13 +67,11 @@ jobs:
         with:
           toolchain: 1.97.1
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
-          key: wasm
-      - name: Install wasm-bindgen CLI
-        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
-      - name: Install frontend dependencies
-        run: pnpm --dir apps/client install --frozen-lockfile
+          shared-key: wasm
+      - run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
+      - run: pnpm --dir apps/client install --frozen-lockfile
       - run: pnpm --dir apps/client typecheck
       - run: node scripts/build-web.mjs
       - uses: actions/upload-artifact@v7
@@ -64,3 +80,17 @@ jobs:
           path: apps/client/dist
           if-no-files-found: error
           retention-days: 7
+
+  security:
+    name: Dependency security audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: audit-0.22.2
+          cache-targets: "false"
+          cache-bin: "true"
+      - run: command -v cargo-audit >/dev/null || cargo install cargo-audit --version 0.22.2 --locked
+      - run: cargo audit

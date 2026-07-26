@@ -1,9 +1,11 @@
 //! Platform-neutral game orchestration.
 
 use ludo_ai::{BotDecision, BotRequest, Difficulty};
-use ludo_application::{ApplicationError, GameSession};
+use std::sync::Arc;
+
+use ludo_application::{ApplicationError, DiceSource, GameSession};
 use ludo_domain::{
-    Controller, DiceValue, GameState, GameStatus, PlayerId, Rules, TokenId, TurnPhase,
+    Controller, DiceValue, GameCommand, GameState, GameStatus, PlayerId, Rules, TokenId, TurnPhase,
     standard_players,
 };
 use ludo_presentation::GameViewModel;
@@ -112,9 +114,9 @@ impl GameRuntime {
 
     /// Creates a runtime from an existing domain state.
     #[must_use]
-    pub const fn from_state(state: GameState) -> Self {
+    pub fn from_state(state: GameState) -> Self {
         Self {
-            session: GameSession::new(state),
+            session: GameSession::new(state, Arc::new(PlatformDice)),
             next_effect: 1,
             pending: None,
             last_error: None,
@@ -181,14 +183,14 @@ impl GameRuntime {
             }
             UiAction::ContinueBot(effect) => {
                 self.take_pending(PendingEffect::Delay(effect))?;
-                match self.session.state().phase {
+                match self.session.state().phase() {
                     TurnPhase::AwaitingRoll => Ok(vec![self.dice_effect()]),
                     TurnPhase::AwaitingMove { .. } => Ok(vec![self.bot_effect()]),
                 }
             }
             UiAction::DiceReady { effect, value } => {
                 self.take_pending(PendingEffect::Dice(effect))?;
-                self.session.roll(value)?;
+                self.session.execute(GameCommand::Roll(value))?;
                 if self.is_bot_turn() {
                     Ok(self.schedule_bot())
                 } else {
@@ -197,7 +199,7 @@ impl GameRuntime {
             }
             UiAction::BotReady { effect, decision } => {
                 self.take_pending(PendingEffect::Bot(effect))?;
-                if decision.revision != self.session.state().revision
+                if decision.revision != self.session.state().revision()
                     || decision.player != self.session.state().current().player.id
                 {
                     return Err(RuntimeError::StaleEffect);
@@ -212,8 +214,8 @@ impl GameRuntime {
     fn require_human_roll(&self) -> Result<(), RuntimeError> {
         if self.pending.is_none()
             && self.is_human_turn()
-            && matches!(self.session.state().status, GameStatus::Playing)
-            && matches!(self.session.state().phase, TurnPhase::AwaitingRoll)
+            && matches!(self.session.state().status(), GameStatus::Playing)
+            && matches!(self.session.state().phase(), TurnPhase::AwaitingRoll)
         {
             Ok(())
         } else {
@@ -224,7 +226,7 @@ impl GameRuntime {
     fn require_human_move(&self) -> Result<(), RuntimeError> {
         if self.pending.is_none()
             && self.is_human_turn()
-            && matches!(self.session.state().phase, TurnPhase::AwaitingMove { .. })
+            && matches!(self.session.state().phase(), TurnPhase::AwaitingMove { .. })
         {
             Ok(())
         } else {
@@ -240,7 +242,7 @@ impl GameRuntime {
     }
 
     fn is_bot_turn(&self) -> bool {
-        matches!(self.session.state().status, GameStatus::Playing)
+        matches!(self.session.state().status(), GameStatus::Playing)
             && matches!(
                 self.session.state().current().player.controller,
                 Controller::Bot
@@ -270,10 +272,7 @@ impl GameRuntime {
         self.pending = Some(PendingEffect::Bot(effect));
         RuntimeEffect::EvaluateBot {
             effect,
-            request: BotRequest {
-                state: self.session.state().clone(),
-                difficulty: Difficulty::Hard,
-            },
+            request: BotRequest::new(self.session.state().clone(), Difficulty::Hard),
         }
     }
 
@@ -290,6 +289,14 @@ impl GameRuntime {
         } else {
             Err(RuntimeError::Unavailable)
         }
+    }
+}
+
+struct PlatformDice;
+
+impl DiceSource for PlatformDice {
+    fn roll(&self) -> DiceValue {
+        DiceValue::new(1).unwrap_or_else(|| std::process::abort())
     }
 }
 

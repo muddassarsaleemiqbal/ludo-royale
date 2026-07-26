@@ -12,6 +12,7 @@ native-worker = ["dep:flume"]
 [dependencies]
 flume = { workspace = true, optional = true }
 ludo-domain = { path = "../ludo-domain" }
+rand = { version = "0.10", default-features = false, features = ["std_rng"] }
 rayon.workspace = true
 serde.workspace = true
 

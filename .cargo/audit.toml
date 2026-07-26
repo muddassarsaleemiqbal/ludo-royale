@@ -1,0 +1,21 @@
+[advisories]
+# quick-xml 0.30 is an xcb build dependency used only to parse the trusted
+# xcb-proto XML files while compiling GPUI's Linux backend. It is not linked
+# into the macOS or Windows application and never parses player/network input.
+# xcb 1.7.0 is current and still pins this build dependency, so these two
+# runtime-parser advisories cannot be upgraded independently.
+ignore = [
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
+informational_warnings = ["unmaintained"]
+severity_threshold = "low"
+
+[output]
+# Fail CI for unsound/yanked crates and all non-ignored vulnerabilities.
+# GPUI currently carries several unmaintained transitive UI/font crates; those
+# remain visible as warnings until the required GPUI stack replaces them.
+deny = ["unsound", "yanked"]
+format = "terminal"
+quiet = false
+show_tree = true
