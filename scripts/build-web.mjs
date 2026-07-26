@@ -5,13 +5,13 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const wasmOutput = resolve(repoRoot, "apps/client/src/wasm/pkg");
-const executable = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-
 function run(command, args) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
     stdio: "inherit",
-    shell: false
+    // Windows resolves pnpm through its .cmd shim, which Node cannot execute
+    // directly with shell disabled (spawnSync returns EINVAL).
+    shell: process.platform === "win32" && command === "pnpm"
   });
 
   if (result.error) throw result.error;
@@ -39,4 +39,4 @@ run("wasm-bindgen", [
   "web",
   "--no-typescript"
 ]);
-run(executable, ["--dir", "apps/client", "build"]);
+run("pnpm", ["--dir", "apps/client", "build"]);
