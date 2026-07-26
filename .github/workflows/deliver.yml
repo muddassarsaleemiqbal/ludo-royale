@@ -12,7 +12,7 @@ concurrency:
 
 permissions:
   actions: read
-  contents: read
+  contents: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -63,10 +63,18 @@ jobs:
           shared-key: desktop-${{ matrix.os }}
       - run: pnpm --dir apps/tauri install --frozen-lockfile
       - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/tauri
           tauriScript: pnpm tauri
           args: --config src-tauri/tauri.ci.conf.json ${{ matrix.args }}
+          tagName: v__VERSION__
+          releaseName: Ludo Royale v__VERSION__
+          releaseBody: Download the installer for your platform below.
+          releaseDraft: false
+          prerelease: false
+          generateReleaseNotes: true
           uploadWorkflowArtifacts: true
           workflowArtifactNamePattern: ludo-royale-[platform]-[arch]-[bundle]
 
