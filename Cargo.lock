@@ -1831,7 +1831,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "ludo-ai"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "flume",
  "ludo-domain",
@@ -1842,7 +1842,7 @@ dependencies = [
 
 [[package]]
 name = "ludo-application"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ludo-domain",
  "serde",
@@ -1851,7 +1851,7 @@ dependencies = [
 
 [[package]]
 name = "ludo-domain"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "proptest",
  "serde",
@@ -1861,7 +1861,7 @@ dependencies = [
 
 [[package]]
 name = "ludo-infrastructure"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "flume",
  "ludo-application",
@@ -1874,7 +1874,7 @@ dependencies = [
 
 [[package]]
 name = "ludo-network"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "flume",
  "if-addrs",
@@ -1889,7 +1889,7 @@ dependencies = [
 
 [[package]]
 name = "ludo-presentation"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ludo-application",
  "ludo-domain",
@@ -1898,7 +1898,7 @@ dependencies = [
 
 [[package]]
 name = "ludo-runtime"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ludo-ai",
  "ludo-application",
@@ -1911,7 +1911,7 @@ dependencies = [
 
 [[package]]
 name = "ludo-simulation"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ludo-ai",
  "ludo-domain",
@@ -1921,7 +1921,7 @@ dependencies = [
 
 [[package]]
 name = "ludo-tauri"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ludo-ai",
  "ludo-application",
@@ -1935,7 +1935,7 @@ dependencies = [
 
 [[package]]
 name = "ludo-web"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ludo-ai",
  "ludo-runtime",
