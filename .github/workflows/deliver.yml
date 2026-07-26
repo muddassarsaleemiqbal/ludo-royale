@@ -12,7 +12,7 @@ concurrency:
 
 permissions:
   actions: read
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,8 +20,39 @@ env:
   CI_SHA: ${{ github.event.workflow_run.head_sha }}
 
 jobs:
+  prepare:
+    name: Prepare patch release
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-24.04
+    outputs:
+      skip: ${{ steps.guard.outputs.skip }}
+      version: ${{ steps.version.outputs.version }}
+      source_sha: ${{ env.CI_SHA }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.CI_SHA }}
+          fetch-depth: 0
+      - name: Prevent release loops
+        id: guard
+        run: |
+          if git log -1 --pretty=%s | grep -q '^chore(release): v'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Calculate next patch version
+        id: version
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          version=$(cargo run --quiet -p xtask -- next-version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   installers:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
@@ -36,10 +67,12 @@ jobs:
             rust-targets: ""
             args: --bundles nsis,msi
     runs-on: ${{ matrix.os }}
+    env:
+      APP_VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ env.CI_SHA }}
+          ref: ${{ needs.prepare.outputs.source_sha }}
       - uses: actions/download-artifact@v8
         with:
           name: web-dist
@@ -61,25 +94,21 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
           shared-key: desktop-${{ matrix.os }}
+      - name: Apply release version
+        shell: bash
+        run: node scripts/set-version.mjs "$APP_VERSION"
       - run: pnpm --dir apps/tauri install --frozen-lockfile
       - uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/tauri
           tauriScript: pnpm tauri
           args: --config src-tauri/tauri.ci.conf.json ${{ matrix.args }}
-          tagName: v__VERSION__
-          releaseName: Ludo Royale v__VERSION__
-          releaseBody: Download the installer for your platform below.
-          releaseDraft: false
-          prerelease: false
-          generateReleaseNotes: true
           uploadWorkflowArtifacts: true
-          workflowArtifactNamePattern: ludo-royale-[platform]-[arch]-[bundle]
+          workflowArtifactNamePattern: ludo-royale-[version]-[platform]-[arch]-[bundle]
 
   vercel:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
     name: Vercel production
     runs-on: ubuntu-24.04
     environment:
@@ -107,3 +136,71 @@ jobs:
         run: |
           url=$(pnpm dlx vercel@latest deploy apps/client/dist --prod --yes --token="${{ secrets.VERCEL_TOKEN }}")
           echo "url=$url" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Version, tag, and publish
+    needs: [prepare, installers, vercel]
+    if: needs.prepare.outputs.skip != 'true'
+    permissions:
+      actions: read
+      contents: write
+    runs-on: ubuntu-24.04
+    env:
+      APP_VERSION: ${{ needs.prepare.outputs.version }}
+      SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ludo-royale-${{ env.APP_VERSION }}-*
+          path: dist
+          merge-multiple: true
+      - name: Create version commit and tag
+        id: release
+        run: |
+          set -euo pipefail
+          tag="v$APP_VERSION"
+          git fetch origin main --tags
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            release_sha=$(git rev-parse "$tag^{commit}")
+            test "$(git rev-parse "$release_sha^")" = "$SOURCE_SHA"
+          else
+            test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+            git checkout --detach "$SOURCE_SHA"
+            node scripts/set-version.mjs "$APP_VERSION"
+            cargo metadata --format-version 1 >/dev/null
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Cargo.toml Cargo.lock apps/client/package.json \
+              apps/tauri/package.json apps/tauri/src-tauri/tauri.conf.json
+            git commit -m "chore(release): v$APP_VERSION"
+            release_sha=$(git rev-parse HEAD)
+            git tag -a "$tag" -m "Ludo Royale $tag"
+            git push --atomic origin "HEAD:main" "refs/tags/$tag:refs/tags/$tag"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+      - name: Generate checksums
+        run: |
+          cd dist
+          find . -type f ! -name SHA256SUMS.txt -print0 |
+            sort -z |
+            xargs -0 sha256sum > SHA256SUMS.txt
+      - name: Publish GitHub release
+        run: |
+          mapfile -d '' assets < <(find dist -type f -print0)
+          tag="${{ steps.release.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber
+          else
+            gh release create "$tag" "${assets[@]}" \
+              --target "${{ steps.release.outputs.release_sha }}" \
+              --title "Ludo Royale $tag" \
+              --generate-notes \
+              --verify-tag
+          fi

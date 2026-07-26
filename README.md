@@ -55,11 +55,12 @@ and:
 - builds Windows x64 NSIS (`.exe`) and WiX (`.msi`) installers;
 - deploys the production web build to Vercel.
 
-Desktop installers are attached to the GitHub Release matching the Tauri
-application version (for example, `v0.1.1`) and retained as GitHub Actions
-workflow artifacts. They are unsigned until Apple and Windows signing
-credentials are added. Bump the workspace and Tauri application version before
-merging the changes that should create the next release.
+After every successful non-release push to `main`, delivery calculates the next
+patch version, builds and deploys everything, then atomically pushes the version
+commit and tag back to `main` and publishes the GitHub Release. The release
+commit is detected on its follow-up CI run so it cannot create a release loop.
+Installers are also retained as workflow artifacts. They are unsigned until
+Apple and Windows signing credentials are added.
 
 Create a Vercel project for the web client, then add these repository or
 `production` environment secrets in GitHub:
