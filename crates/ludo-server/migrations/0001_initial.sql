@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY NOT NULL,
+    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS match_results (
+    id TEXT PRIMARY KEY NOT NULL,
+    winner_user_id TEXT REFERENCES users(id),
+    player_ids TEXT NOT NULL,
+    final_state TEXT NOT NULL,
+    completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

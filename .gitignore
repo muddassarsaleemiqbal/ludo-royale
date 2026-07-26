@@ -20,3 +20,4 @@
 /apps/tauri/src-tauri/gen
 .vercel
 .env*
+!.env.example

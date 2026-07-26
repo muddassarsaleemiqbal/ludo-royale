@@ -36,6 +36,27 @@ Run a headless stress simulation:
 cargo run -p ludo-simulation --release -- 10000
 ```
 
+## Online server
+
+Online play requires an account. The Rust server owns dice rolls, validates
+every action against an exact revision, and broadcasts the canonical state to
+both browser and Tauri clients.
+
+```sh
+docker compose up --build
+```
+
+For local development, the client defaults to `http://localhost:8080`. For
+production, deploy `Dockerfile.server` with a persistent `/data` volume, set
+`LUDO_ALLOWED_ORIGINS` to the Vercel URL, and define the GitHub Actions
+repository variable `LUDO_API_URL` with the public HTTPS server URL. CI embeds
+that URL as `VITE_API_URL` in the single web artifact reused by Vercel and
+desktop installers.
+
+## Project structure
+
+For a deeper walkthrough of the architecture, platform behavior, and runtime flow, see [HOW-THE-APP-WORKS.md](HOW-THE-APP-WORKS.md).
+
 ## Quality checks
 
 ```sh

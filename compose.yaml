@@ -1,0 +1,17 @@
+services:
+  online:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    environment:
+      DATABASE_URL: sqlite:///data/ludo-online.db?mode=rwc
+      LUDO_SERVER_ADDR: 0.0.0.0:8080
+      LUDO_ALLOWED_ORIGINS: http://localhost:5173
+    ports:
+      - "8080:8080"
+    volumes:
+      - ludo-online-data:/data
+    restart: unless-stopped
+
+volumes:
+  ludo-online-data:
