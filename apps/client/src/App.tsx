@@ -131,7 +131,7 @@ export default function App() {
   const online = useOnlineStore();
   const [confirmNew, setConfirmNew] = useState(false);
 
-  console.log("WELCOME TO LUDO ROYALE")
+  console.log("WELCOME TO LUDO ROYALE  ")
 
   useEffect(() => {
     void gameStore.initialize();
