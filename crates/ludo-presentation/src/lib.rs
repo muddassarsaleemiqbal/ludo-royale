@@ -1,8 +1,10 @@
 //! GUI-neutral view models.
 
 use ludo_domain::{
-    GameEvent, GameState, GameStatus, PlayerColor, PlayerId, TokenId, TokenPosition, TurnPhase,
+    Controller, GameEvent, GameState, GameStatus, PlayerColor, PlayerId, TokenId, TokenPosition,
+    TurnPhase,
 };
+use serde::{Deserialize, Serialize};
 
 /// A framework-neutral visual beat derived from domain facts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,7 +137,7 @@ fn movement_positions(from: TokenPosition, to: TokenPosition) -> Vec<TokenPositi
 }
 
 /// One token prepared for rendering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenViewModel {
     /// Owner.
     pub player: PlayerId,
@@ -150,7 +152,7 @@ pub struct TokenViewModel {
 }
 
 /// One player card prepared for rendering.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerViewModel {
     /// ID.
     pub id: PlayerId,
@@ -165,7 +167,7 @@ pub struct PlayerViewModel {
 }
 
 /// Complete presentation snapshot with no GUI framework types.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameViewModel {
     /// Player cards.
     pub players: Vec<PlayerViewModel>,
@@ -177,6 +179,12 @@ pub struct GameViewModel {
     pub dice: Option<u8>,
     /// Whether the roll action is available.
     pub can_roll: bool,
+    /// Whether the current player is controlled by a human.
+    pub human_turn: bool,
+    /// Whether platform work is pending.
+    pub busy: bool,
+    /// Most recent presentation-safe runtime error.
+    pub error: Option<String>,
     /// Current state revision.
     pub revision: u64,
     /// Winning player, when complete.
@@ -244,9 +252,24 @@ impl From<&GameState> for GameViewModel {
             dice,
             can_roll: matches!(state.status(), GameStatus::Playing)
                 && matches!(state.phase(), TurnPhase::AwaitingRoll),
+            human_turn: matches!(state.current().player.controller, Controller::Human),
+            busy: false,
+            error: None,
             revision: state.revision(),
             winner,
         }
+    }
+}
+
+impl GameViewModel {
+    /// Builds a snapshot and attaches runtime-only presentation state.
+    #[must_use]
+    pub fn new(state: &GameState, busy: bool, error: Option<String>) -> Self {
+        let mut model = Self::from(state);
+        model.busy = busy;
+        model.error = error;
+        model.can_roll &= model.human_turn && !busy;
+        model
     }
 }
 

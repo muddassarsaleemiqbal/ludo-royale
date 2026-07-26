@@ -11,3 +11,12 @@
 /ludo-save.json
 /ludo-profiles.json
 /ludo-rule-presets.json
+/apps/*/node_modules
+/apps/client/dist
+/apps/client/src/wasm/pkg
+/apps/client/*.tsbuildinfo
+/apps/client/vite.config.js
+/apps/client/vite.config.d.ts
+/apps/tauri/src-tauri/gen
+.vercel
+.env*
