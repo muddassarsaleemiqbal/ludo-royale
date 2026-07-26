@@ -46,8 +46,10 @@ cargo test --workspace --all-targets --all-features
 
 ## Continuous delivery
 
-Every pull request runs the Rust, TypeScript, and WebAssembly checks. A push to
-`main` additionally:
+Every pull request runs the Rust, TypeScript, and WebAssembly checks. CI builds
+the production web bundle once and stores it as `web-dist`. After a successful
+CI run on `main`, the delivery workflow downloads that exact verified artifact
+and:
 
 - builds a universal macOS DMG;
 - builds Windows x64 NSIS (`.exe`) and WiX (`.msi`) installers;
@@ -65,5 +67,5 @@ Create a Vercel project for the web client, then add these repository or
 
 The IDs can be copied from the Vercel project's `.vercel/project.json` after
 running `vercel link` locally. No Vercel build command is needed: GitHub builds
-the Rust/WASM application and deploys the resulting static `apps/client/dist`
-directory.
+the Rust/WASM application once, then Vercel and both Tauri installer jobs reuse
+the resulting static `apps/client/dist` directory.

@@ -1,0 +1,101 @@
+name: Deliver
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: ["main"]
+
+concurrency:
+  group: delivery-main
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CI_RUN_ID: ${{ github.event.workflow_run.id }}
+  CI_SHA: ${{ github.event.workflow_run.head_sha }}
+
+jobs:
+  installers:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS universal DMG
+            os: macos-14
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin --bundles dmg
+          - name: Windows x64 installers
+            os: windows-2025
+            rust-targets: ""
+            args: --bundles nsis,msi
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.CI_SHA }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: apps/client/dist
+          github-token: ${{ github.token }}
+          run-id: ${{ env.CI_RUN_ID }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.17.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/tauri/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.rust-targets }}
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: desktop-${{ matrix.os }}
+      - run: pnpm --dir apps/tauri install --frozen-lockfile
+      - uses: tauri-apps/tauri-action@v1
+        with:
+          projectPath: apps/tauri
+          tauriScript: pnpm tauri
+          args: --config src-tauri/tauri.ci.conf.json ${{ matrix.args }}
+          uploadWorkflowArtifacts: true
+          workflowArtifactNamePattern: ludo-royale-[platform]-[arch]-[bundle]
+
+  vercel:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    name: Vercel production
+    runs-on: ubuntu-24.04
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: apps/client/dist
+          github-token: ${{ github.token }}
+          run-id: ${{ env.CI_RUN_ID }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.17.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Deploy the verified CI artifact
+        id: deploy
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          url=$(pnpm dlx vercel@latest deploy apps/client/dist --prod --yes --token="${{ secrets.VERCEL_TOKEN }}")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
