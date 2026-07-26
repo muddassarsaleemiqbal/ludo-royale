@@ -146,12 +146,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
-    let address: SocketAddr = match env::var("LUDO_SERVER_ADDR") {
-        Ok(value) => value.parse()?,
-        Err(_) => {
-            let port = env::var("PORT").unwrap_or_else(|_| "8080".to_owned());
-            format!("0.0.0.0:{port}").parse()?
-        }
+    let address: SocketAddr = if let Ok(value) = env::var("LUDO_SERVER_ADDR") {
+        value.parse()?
+    } else {
+        let port = env::var("PORT").unwrap_or_else(|_| "8080".to_owned());
+        format!("0.0.0.0:{port}").parse()?
     };
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "online server listening");
