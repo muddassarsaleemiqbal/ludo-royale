@@ -219,3 +219,29 @@ button { font: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior:auto!important; animation-duration:.01ms!important; animation-iteration-count:1!important; transition-duration:.01ms!important; }
 }
+.online-form,
+.online-lobby {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 1.25rem;
+}
+
+.online-form input {
+  width: 100%;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 0.75rem;
+  background: rgb(255 255 255 / 6%);
+  padding: 0.8rem 0.9rem;
+  color: white;
+  outline: none;
+}
+
+.online-form input:focus {
+  border-color: rgb(251 191 36 / 70%);
+  box-shadow: 0 0 0 3px rgb(251 191 36 / 10%);
+}
+
+.online-error {
+  color: #fca5a5;
+  font-size: 0.85rem;
+}

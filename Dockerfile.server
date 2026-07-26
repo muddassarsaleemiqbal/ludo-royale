@@ -1,0 +1,12 @@
+FROM rust:1.97-bookworm AS builder
+WORKDIR /app
+COPY . .
+RUN cargo build --locked --release -p ludo-server
+
+FROM debian:bookworm-slim
+RUN useradd --system --create-home ludo
+COPY --from=builder /app/target/release/ludo-server /usr/local/bin/ludo-server
+USER ludo
+ENV LUDO_SERVER_ADDR=0.0.0.0:8080
+EXPOSE 8080
+CMD ["ludo-server"]

@@ -9,6 +9,7 @@ members = [
     "crates/ludo-web",
     "apps/tauri/src-tauri",
     "crates/ludo-network",
+    "crates/ludo-server",
     "crates/ludo-simulation",
     "tools/xtask",
 ]

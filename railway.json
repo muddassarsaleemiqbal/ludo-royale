@@ -1,0 +1,23 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "RAILPACK",
+    "buildCommand": "cargo build --locked --release -p ludo-server",
+    "watchPatterns": [
+      "/Cargo.toml",
+      "/Cargo.lock",
+      "/rust-toolchain.toml",
+      "/crates/ludo-server/**",
+      "/crates/ludo-domain/**",
+      "/crates/ludo-presentation/**"
+    ]
+  },
+  "deploy": {
+    "startCommand": "./target/release/ludo-server",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 30,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 5,
+    "drainingSeconds": 30
+  }
+}

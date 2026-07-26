@@ -53,6 +53,8 @@ jobs:
     name: React and WebAssembly
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      VITE_API_URL: ${{ vars.LUDO_API_URL }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: pnpm/action-setup@v4
@@ -93,4 +95,7 @@ jobs:
           cache-targets: "false"
           cache-bin: "true"
       - run: command -v cargo-audit >/dev/null || cargo install cargo-audit --version 0.22.2 --locked
-      - run: cargo audit
+      # SQLx records its inactive, feature-gated MySQL driver in Cargo.lock.
+      # ludo-server disables SQLx defaults and enables PostgreSQL only, so rsa
+      # is not present in the resolved build graph (`cargo tree -i rsa` is empty).
+      - run: cargo audit --ignore RUSTSEC-2023-0071
