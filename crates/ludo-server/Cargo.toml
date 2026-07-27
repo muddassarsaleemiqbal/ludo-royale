@@ -15,11 +15,11 @@ rand.workspace = true
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "macros", "migrate"] }
+sha2 = "0.11"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "macros", "migrate"] }
 thiserror.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.7", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde", "v4"] }
