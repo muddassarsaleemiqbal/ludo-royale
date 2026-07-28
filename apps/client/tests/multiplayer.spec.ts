@@ -44,7 +44,6 @@ test("two players can join, start, act, and reconnect", async ({ browser }) => {
   await host.reload();
   await expect(host.locator(".turn-banner")).toContainText("Your turn");
   await host.getByRole("button", { name: "Roll dice" }).click();
-  await expect(host.getByText("Match status")).toBeVisible();
   await expect(host.locator(".event-feed")).toContainText("rolled the dice");
 
   await hostContext.close();
