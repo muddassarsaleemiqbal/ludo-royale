@@ -90,13 +90,21 @@ const presets = [
   { id: "tournament", name: "Tournament", detail: "Rank every player with competitive rules", time: "45–60 min" }
 ];
 
-function SetupScreen({ onLocal }: { onLocal: () => void }) {
+type LocalSetup = {
+  preset: "Classic" | "Quick" | "Tournament";
+  botDifficulty: "Easy" | "Medium" | "Hard";
+};
+
+function SetupScreen({ onLocal }: { onLocal: (setup: LocalSetup) => void }) {
   const online = useOnlineStore();
   const [mode, setMode] = useState<"local" | "online">("local");
   const [preset, setPreset] = useState("classic");
   const [difficulty, setDifficulty] = useState("medium");
   const [tableName, setTableName] = useState("");
-  const [privateGame, setPrivateGame] = useState(false);
+  const localSetup = (): LocalSetup => ({
+    preset: (preset[0]?.toUpperCase() + preset.slice(1)) as LocalSetup["preset"],
+    botDifficulty: (difficulty[0]?.toUpperCase() + difficulty.slice(1)) as LocalSetup["botDifficulty"]
+  });
 
   return (
     <main className="setup-shell">
@@ -104,7 +112,7 @@ function SetupScreen({ onLocal }: { onLocal: () => void }) {
       <header className="setup-header">
         <div className="brand"><div className="brand-mark small"><span>♟</span></div><div><strong>Ludo Royale</strong><span>Choose your table</span></div></div>
         <div className="setup-profile">
-          {online.user ? <><span className={online.connected ? "online-dot" : ""} />{online.user.display_name}</> : <Dialog><DialogTrigger asChild><Button variant="secondary">Sign in</Button></DialogTrigger><OnlineDialog /></Dialog>}
+          {online.user ? <><span className={online.connected && online.realtimeConnected ? "online-dot" : ""} />{online.user.display_name}</> : <Dialog><DialogTrigger asChild><Button variant="secondary">Sign in</Button></DialogTrigger><OnlineDialog /></Dialog>}
         </div>
       </header>
 
@@ -132,31 +140,30 @@ function SetupScreen({ onLocal }: { onLocal: () => void }) {
               <div><strong>AI difficulty</strong><small>Applies to all three opponents</small></div>
               <div className="segmented">{["easy","medium","hard"].map(level => <button key={level} className={difficulty === level ? "active" : ""} onClick={() => setDifficulty(level)}>{level}</button>)}</div>
             </div>
-            <Button size="lg" className="setup-primary" onClick={onLocal}>Start solo game <ChevronRight /></Button>
+            <Button size="lg" className="setup-primary" onClick={() => onLocal(localSetup())}>Start solo game <ChevronRight /></Button>
           </> : !online.user ? <div className="signin-prompt">
             <LockKeyhole /><h2>Sign in to join the tables</h2><p>An account keeps games fair and lets you reconnect on any device.</p>
             <Dialog><DialogTrigger asChild><Button>Sign in or create account</Button></DialogTrigger><OnlineDialog /></Dialog>
           </div> : online.lobby ? <div className="lobby-room">
             <div className="lobby-title"><div><span>Waiting room</span><h2>{online.lobby.name}</h2></div><small>{online.lobby.rule_preset} · {online.lobby.bot_difficulty} AI</small></div>
             <div className="seat-list">{online.lobby.seats.map((seat, index) => <div className={seat.is_bot ? "bot-seat" : "human-seat"} key={seat.seat}><span>{index + 1}</span><div><strong>{seat.name}</strong><small>{seat.is_bot ? "AI fills this seat" : "Ready to play"}</small></div>{index === 0 && <Crown />}</div>)}</div>
-            {online.lobby.host_user_id === online.user.id && online.lobby.requests.length > 0 && <div className="request-list"><strong>Join requests</strong>{online.lobby.requests.map(request => <div key={request.id}><span>{request.display_name}</span><Button size="sm" onClick={() => onlineStore.respondJoin(request.id, true)}>Accept</Button><Button size="sm" variant="ghost" onClick={() => onlineStore.respondJoin(request.id, false)}>Decline</Button></div>)}</div>}
-            <div className="lobby-actions">{online.lobby.host_user_id === online.user.id ? <Button size="lg" onClick={() => onlineStore.startGame()}>Start with this lineup</Button> : <Button variant="secondary" onClick={() => onlineStore.leaveLobby()}>Leave table</Button>}</div>
+            {online.lobby.host_user_id === online.user.id && online.lobby.requests.length > 0 && <div className="request-list"><strong>Join requests</strong>{online.lobby.requests.map(request => <div key={request.id}><span>{request.display_name}</span><Button size="sm" disabled={online.pending === `request:${request.id}`} onClick={() => onlineStore.respondJoin(request.id, true)}>{online.pending === `request:${request.id}` ? "Saving…" : "Accept"}</Button><Button size="sm" variant="ghost" disabled={online.pending === `request:${request.id}`} onClick={() => onlineStore.respondJoin(request.id, false)}>Decline</Button></div>)}</div>}
+            <div className="lobby-actions">{online.lobby.host_user_id === online.user.id ? <Button size="lg" disabled={online.pending === "start"} onClick={() => onlineStore.startGame()}>{online.pending === "start" ? "Starting…" : "Start with this lineup"}</Button> : <Button variant="secondary" onClick={() => onlineStore.leaveLobby()}>Leave table</Button>}</div>
           </div> : <div className="table-browser">
             <div className="browser-heading"><div><strong>Open tables</strong><small>Ask the host for a seat</small></div><Button size="icon" variant="ghost" onClick={() => onlineStore.listLobbies()} aria-label="Refresh tables"><RefreshCw /></Button></div>
             <div className="table-list">{online.lobbies.length ? online.lobbies.map(lobby => <div className="table-row" key={lobby.id}>
               <div className="table-icon"><Crown /></div><div><strong>{lobby.name}</strong><small>Hosted by {lobby.host_name} · {lobby.rule_preset}</small></div>
               <span>{lobby.human_players}/4</span>
-              {lobby.is_host ? <Button size="sm" onClick={() => onlineStore.requestJoin(lobby.id)} disabled>Hosting</Button> : <Button size="sm" variant="secondary" disabled={lobby.requested} onClick={() => onlineStore.requestJoin(lobby.id)}>{lobby.requested ? "Requested" : "Request seat"}</Button>}
+              {lobby.is_host ? <Button size="sm" disabled>Hosting</Button> : <Button size="sm" variant="secondary" disabled={lobby.requested || online.pending === `join:${lobby.id}`} onClick={() => onlineStore.requestJoin(lobby.id)}>{online.pending === `join:${lobby.id}` ? "Sending…" : lobby.requested ? "Requested" : "Request seat"}</Button>}
             </div>) : <div className="empty-tables"><Globe2 /><strong>No open tables yet</strong><span>Be the first host online.</span></div>}</div>
             <div className="create-table">
               <div className="section-label"><span><Plus /></span><div><strong>Host a new table</strong><small>Three AI players fill empty seats</small></div></div>
               <input value={tableName} onChange={e => setTableName(e.target.value)} placeholder={`${online.user.display_name}'s table`} maxLength={40} />
               <div className="create-options"><select value={preset} onChange={e => setPreset(e.target.value)}>{presets.map(p => <option value={p.id} key={p.id}>{p.name}</option>)}</select><select value={difficulty} onChange={e => setDifficulty(e.target.value)}><option value="easy">Easy AI</option><option value="medium">Medium AI</option><option value="hard">Hard AI</option></select></div>
-              <label><input type="checkbox" checked={privateGame} onChange={e => setPrivateGame(e.target.checked)} /> Private table</label>
-              <Button onClick={() => onlineStore.createLobby({ name: tableName, rule_preset: preset, bot_difficulty: difficulty, is_public: !privateGame })}>Create table</Button>
+              <Button disabled={online.pending === "create"} onClick={() => onlineStore.createLobby({ name: tableName, rule_preset: preset, bot_difficulty: difficulty })}>{online.pending === "create" ? "Creating table…" : "Create public table"}</Button>
             </div>
           </div>}
-          {online.error && <p className="online-error">{online.error}</p>}
+          {online.error && <div className="online-error" role="alert"><span>{online.error}</span><button onClick={() => onlineStore.clearError()} aria-label="Dismiss error">×</button></div>}
         </div>
       </section>
     </main>
@@ -230,7 +237,15 @@ export default function App() {
   }
 
   if (!inGame && !online.model) {
-    return <SetupScreen onLocal={() => { void gameStore.dispatch("NewGame"); setInGame(true); }} />;
+    return <SetupScreen onLocal={(setup) => {
+      void gameStore.dispatch({
+        NewGameWith: {
+          preset: setup.preset,
+          bot_difficulty: setup.botDifficulty
+        }
+      });
+      setInGame(true);
+    }} />;
   }
 
   const activeModel = online.model ?? model;
@@ -262,7 +277,10 @@ export default function App() {
     <main className="app-shell">
       <div className="ambient ambient-one" />
       <div className="ambient ambient-two" />
-      <GameHeader platform={platform} onlineActive={Boolean(online.model)} onLocal={() => onlineStore.showLocal()} />
+      <GameHeader platform={platform} onlineActive={Boolean(online.model)} onLocal={() => {
+        onlineStore.showLocal();
+        setInGame(false);
+      }} />
 
       <section className="game-layout">
         <aside className="left-panel">

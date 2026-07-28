@@ -13,7 +13,7 @@ use argon2::{
 use axum::{
     Json, Router,
     extract::{
-        Query, State,
+        State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, StatusCode},
@@ -22,6 +22,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+use ludo_ai::{BotRequest, ParallelBot};
 use ludo_domain::{
     BotDifficulty, Controller, DiceValue, GameCommand, GameState, GameStatus, Player, PlayerColor,
     PlayerId, RulePreset, TokenId, TurnPhase,
@@ -30,9 +31,12 @@ use ludo_presentation::GameViewModel;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Row, postgres::PgPoolOptions};
+use sqlx::{PgPool, Postgres, Row, Transaction, postgres::PgPoolOptions};
 use tokio::sync::{Mutex, mpsc};
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::{AllowOrigin, Any, CorsLayer},
+    trace::TraceLayer,
+};
 use uuid::Uuid;
 
 const SESSION_SECONDS: i64 = 60 * 60 * 24 * 30;
@@ -69,11 +73,6 @@ struct Credentials {
 struct AuthResponse {
     token: String,
     user: User,
-}
-
-#[derive(Deserialize)]
-struct WsQuery {
-    token: String,
 }
 
 #[derive(Serialize)]
@@ -121,6 +120,13 @@ enum ClientMessage {
         revision: u64,
         token: TokenId,
     },
+}
+
+#[derive(Debug, Deserialize)]
+struct ClientEnvelope {
+    command_id: Uuid,
+    #[serde(flatten)]
+    message: ClientMessage,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -187,8 +193,14 @@ enum ServerMessage {
         lobby_id: Uuid,
         model: GameViewModel,
     },
+    Ack {
+        command_id: Uuid,
+    },
     Error {
+        command_id: Option<Uuid>,
+        code: &'static str,
         message: String,
+        recoverable: bool,
     },
 }
 
@@ -214,6 +226,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
         }),
     };
+    if state.ably.is_some() {
+        tokio::spawn(run_outbox(state.clone()));
+    }
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/auth/register", post(register))
@@ -222,7 +237,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/me", get(me))
         .route("/api/ably/token", get(ably_token))
         .route("/api/online", get(websocket))
-        .layer(CorsLayer::permissive())
+        .layer(cors_layer()?)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
     let address: SocketAddr = env::var("LUDO_SERVER_ADDR")
@@ -245,11 +260,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn websocket(
     State(state): State<AppState>,
-    Query(query): Query<WsQuery>,
+    headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, ApiError> {
-    let user = authenticate_token(&state, &query.token).await?;
-    Ok(upgrade.on_upgrade(move |socket| online_socket(state, user, socket)))
+    let token = websocket_token(&headers)?;
+    let user = authenticate_token(&state, token).await?;
+    Ok(upgrade
+        .protocols(["ludo"])
+        .on_upgrade(move |socket| online_socket(state, user, socket)))
 }
 
 async fn ably_token(State(state): State<AppState>, headers: HeaderMap) -> Result<String, ApiError> {
@@ -300,11 +318,63 @@ async fn online_socket(state: AppState, user: User, socket: WebSocket) {
         }
     });
     send_lobbies(&state, &user).await;
+    resume_user_state(&state, &user).await;
     while let Some(Ok(Message::Text(text))) = source.next().await {
-        match serde_json::from_str(&text) {
-            Ok(message) => {
-                if let Err(error) = handle_online(&state, &user, message).await {
-                    send_to(&state, user.id, ServerMessage::Error { message: error.1 }).await;
+        if text.len() > 16 * 1024 {
+            send_to(
+                &state,
+                user.id,
+                ServerMessage::Error {
+                    command_id: None,
+                    code: "message_too_large",
+                    message: "Online messages are limited to 16 KiB".to_owned(),
+                    recoverable: true,
+                },
+            )
+            .await;
+            continue;
+        }
+        match serde_json::from_str::<ClientEnvelope>(&text) {
+            Ok(envelope) => {
+                if command_was_processed(&state, user.id, envelope.command_id).await {
+                    send_to(
+                        &state,
+                        user.id,
+                        ServerMessage::Ack {
+                            command_id: envelope.command_id,
+                        },
+                    )
+                    .await;
+                    continue;
+                }
+                if let Err(error) = handle_online(&state, &user, envelope.message).await {
+                    tracing::warn!(
+                        user_id = %user.id,
+                        status = %error.0,
+                        message = %error.1,
+                        "online command failed"
+                    );
+                    send_to(
+                        &state,
+                        user.id,
+                        ServerMessage::Error {
+                            command_id: Some(envelope.command_id),
+                            code: error.code(),
+                            recoverable: error.0 != StatusCode::UNAUTHORIZED,
+                            message: error.1,
+                        },
+                    )
+                    .await;
+                } else {
+                    record_processed_command(&state, user.id, envelope.command_id).await;
+                    send_to(
+                        &state,
+                        user.id,
+                        ServerMessage::Ack {
+                            command_id: envelope.command_id,
+                        },
+                    )
+                    .await;
                 }
             }
             Err(_) => {
@@ -312,7 +382,10 @@ async fn online_socket(state: AppState, user: User, socket: WebSocket) {
                     &state,
                     user.id,
                     ServerMessage::Error {
+                        command_id: None,
+                        code: "invalid_message",
                         message: "Invalid online message".to_owned(),
+                        recoverable: true,
                     },
                 )
                 .await;
@@ -321,6 +394,37 @@ async fn online_socket(state: AppState, user: User, socket: WebSocket) {
     }
     state.sockets.lock().await.remove(&user.id);
     writer.abort();
+}
+
+async fn command_was_processed(state: &AppState, user_id: Uuid, command_id: Uuid) -> bool {
+    match sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM processed_commands WHERE command_id=$1 AND user_id=$2)",
+    )
+    .bind(command_id)
+    .bind(user_id)
+    .fetch_one(&state.db)
+    .await
+    {
+        Ok(processed) => processed,
+        Err(error) => {
+            tracing::error!(%error, %user_id, %command_id, "could not check command replay");
+            false
+        }
+    }
+}
+
+async fn record_processed_command(state: &AppState, user_id: Uuid, command_id: Uuid) {
+    if let Err(error) = sqlx::query(
+        "INSERT INTO processed_commands(command_id,user_id) VALUES($1,$2)
+         ON CONFLICT(command_id) DO NOTHING",
+    )
+    .bind(command_id)
+    .bind(user_id)
+    .execute(&state.db)
+    .await
+    {
+        tracing::error!(%error, %user_id, %command_id, "could not record processed command");
+    }
 }
 
 async fn handle_online(
@@ -335,62 +439,10 @@ async fn handle_online(
             rule_preset,
             bot_difficulty,
             is_public,
-        } => {
-            validate_lobby_options(&rule_preset, &bot_difficulty)?;
-            let id = Uuid::new_v4();
-            let name = if name.trim().is_empty() {
-                format!("{}'s table", user.display_name)
-            } else {
-                name.trim().chars().take(40).collect()
-            };
-            let mut tx = state.db.begin().await?;
-            sqlx::query("INSERT INTO game_lobbies(id,host_user_id,name,rule_preset,bot_difficulty,is_public) VALUES($1,$2,$3,$4,$5,$6)")
-                .bind(id).bind(user.id).bind(name).bind(rule_preset).bind(bot_difficulty).bind(is_public).execute(&mut *tx).await?;
-            sqlx::query("INSERT INTO lobby_members(lobby_id,user_id,seat) VALUES($1,$2,0)")
-                .bind(id)
-                .bind(user.id)
-                .execute(&mut *tx)
-                .await?;
-            tx.commit().await?;
-            send_lobby(state, id).await?;
-            broadcast_lobbies(state).await;
-        }
-        ClientMessage::RequestJoin { lobby_id } => {
-            sqlx::query("INSERT INTO lobby_join_requests(id,lobby_id,user_id) SELECT $1,$2,$3 WHERE EXISTS(SELECT 1 FROM game_lobbies WHERE id=$2 AND status='waiting') ON CONFLICT(lobby_id,user_id) DO UPDATE SET status='pending',created_at=CURRENT_TIMESTAMP")
-                .bind(Uuid::new_v4()).bind(lobby_id).bind(user.id).execute(&state.db).await?;
-            let host: Option<Uuid> =
-                sqlx::query_scalar("SELECT host_user_id FROM game_lobbies WHERE id=$1")
-                    .bind(lobby_id)
-                    .fetch_optional(&state.db)
-                    .await?;
-            if let Some(host) = host {
-                send_lobby_to(state, lobby_id, host).await?;
-            }
-            send_to(state, user.id, ServerMessage::JoinRequested { lobby_id }).await;
-            broadcast_lobbies(state).await;
-        }
+        } => create_lobby(state, user, name, rule_preset, bot_difficulty, is_public).await?,
+        ClientMessage::RequestJoin { lobby_id } => request_join(state, user, lobby_id).await?,
         ClientMessage::RespondJoin { request_id, accept } => {
-            let mut tx = state.db.begin().await?;
-            let row = sqlx::query("SELECT r.lobby_id,r.user_id FROM lobby_join_requests r JOIN game_lobbies l ON l.id=r.lobby_id WHERE r.id=$1 AND l.host_user_id=$2 AND r.status='pending' FOR UPDATE")
-                .bind(request_id).bind(user.id).fetch_optional(&mut *tx).await?.ok_or_else(|| ApiError::bad_request("Join request is no longer available"))?;
-            let lobby_id: Uuid = row.get(0);
-            let joining: Uuid = row.get(1);
-            if accept {
-                let seat: Option<i16> = sqlx::query_scalar("SELECT s FROM generate_series(1,3) s WHERE NOT EXISTS(SELECT 1 FROM lobby_members WHERE lobby_id=$1 AND seat=s) ORDER BY s LIMIT 1")
-                    .bind(lobby_id).fetch_optional(&mut *tx).await?;
-                let seat = seat.ok_or_else(|| ApiError::conflict("This table is full"))?;
-                sqlx::query("INSERT INTO lobby_members(lobby_id,user_id,seat) VALUES($1,$2,$3) ON CONFLICT DO NOTHING").bind(lobby_id).bind(joining).bind(seat).execute(&mut *tx).await?;
-            }
-            sqlx::query(
-                "UPDATE lobby_join_requests SET status=$2::join_request_status WHERE id=$1",
-            )
-            .bind(request_id)
-            .bind(if accept { "accepted" } else { "declined" })
-            .execute(&mut *tx)
-            .await?;
-            tx.commit().await?;
-            send_lobby(state, lobby_id).await?;
-            broadcast_lobbies(state).await;
+            respond_join(state, user, request_id, accept).await?;
         }
         ClientMessage::LeaveLobby { lobby_id } => {
             sqlx::query("DELETE FROM lobby_members WHERE lobby_id=$1 AND user_id=$2 AND EXISTS(SELECT 1 FROM game_lobbies WHERE id=$1 AND host_user_id<>$2 AND status='waiting')").bind(lobby_id).bind(user.id).execute(&state.db).await?;
@@ -408,6 +460,162 @@ async fn handle_online(
             token,
         } => apply_action(state, user, lobby_id, revision, Some(token)).await?,
     }
+    Ok(())
+}
+
+async fn create_lobby(
+    state: &AppState,
+    user: &User,
+    name: String,
+    rule_preset: String,
+    bot_difficulty: String,
+    is_public: bool,
+) -> Result<(), ApiError> {
+    validate_lobby_options(&rule_preset, &bot_difficulty)?;
+    let id = Uuid::new_v4();
+    let name = if name.trim().is_empty() {
+        format!("{}'s table", user.display_name)
+    } else {
+        name.trim().chars().take(40).collect()
+    };
+    let mut tx = state.db.begin().await?;
+    let active_lobby: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1 FROM lobby_members m
+            JOIN game_lobbies l ON l.id=m.lobby_id
+            WHERE m.user_id=$1 AND l.status IN ('waiting','playing')
+        )",
+    )
+    .bind(user.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if active_lobby {
+        return Err(ApiError::conflict(
+            "Leave or finish your current table before creating another",
+        ));
+    }
+    sqlx::query("INSERT INTO game_lobbies(id,host_user_id,name,rule_preset,bot_difficulty,is_public) VALUES($1,$2,$3,$4,$5,$6)")
+        .bind(id).bind(user.id).bind(name).bind(rule_preset).bind(bot_difficulty).bind(is_public).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO lobby_members(lobby_id,user_id,seat) VALUES($1,$2,0)")
+        .bind(id)
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    send_lobby(state, id).await?;
+    broadcast_lobbies(state).await;
+    Ok(())
+}
+
+async fn request_join(state: &AppState, user: &User, lobby_id: Uuid) -> Result<(), ApiError> {
+    let inserted = sqlx::query(
+        "INSERT INTO lobby_join_requests(id,lobby_id,user_id)
+         SELECT $1,$2,$3
+         WHERE EXISTS(
+            SELECT 1 FROM game_lobbies l
+            WHERE l.id=$2 AND l.status='waiting' AND l.host_user_id<>$3
+              AND NOT EXISTS(
+                SELECT 1 FROM lobby_members m WHERE m.lobby_id=l.id AND m.user_id=$3
+              )
+              AND (SELECT count(*) FROM lobby_members m WHERE m.lobby_id=l.id) < 4
+         )
+         ON CONFLICT(lobby_id,user_id)
+         DO UPDATE SET status='pending',created_at=CURRENT_TIMESTAMP",
+    )
+    .bind(Uuid::new_v4())
+    .bind(lobby_id)
+    .bind(user.id)
+    .execute(&state.db)
+    .await?;
+    if inserted.rows_affected() == 0 {
+        return Err(ApiError::conflict(
+            "This table is unavailable, full, or you already have a seat",
+        ));
+    }
+    let host: Option<Uuid> =
+        sqlx::query_scalar("SELECT host_user_id FROM game_lobbies WHERE id=$1")
+            .bind(lobby_id)
+            .fetch_optional(&state.db)
+            .await?;
+    if let Some(host) = host {
+        send_lobby_to(state, lobby_id, host).await?;
+    }
+    send_to(state, user.id, ServerMessage::JoinRequested { lobby_id }).await;
+    broadcast_lobbies(state).await;
+    Ok(())
+}
+
+async fn respond_join(
+    state: &AppState,
+    user: &User,
+    request_id: Uuid,
+    accept: bool,
+) -> Result<(), ApiError> {
+    let mut tx = state.db.begin().await?;
+    let row = sqlx::query("SELECT r.lobby_id,r.user_id FROM lobby_join_requests r JOIN game_lobbies l ON l.id=r.lobby_id WHERE r.id=$1 AND l.host_user_id=$2 AND l.status='waiting' AND r.status='pending' FOR UPDATE OF l,r")
+        .bind(request_id).bind(user.id).fetch_optional(&mut *tx).await?.ok_or_else(|| ApiError::bad_request("Join request is no longer available"))?;
+    let lobby_id: Uuid = row.get(0);
+    let joining: Uuid = row.get(1);
+    if accept {
+        accept_joining_player(&mut tx, lobby_id, joining).await?;
+    }
+    sqlx::query("UPDATE lobby_join_requests SET status=$2::join_request_status WHERE id=$1")
+        .bind(request_id)
+        .bind(if accept { "accepted" } else { "declined" })
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    send_lobby(state, lobby_id).await?;
+    broadcast_lobbies(state).await;
+    Ok(())
+}
+
+async fn accept_joining_player(
+    tx: &mut Transaction<'_, Postgres>,
+    lobby_id: Uuid,
+    joining: Uuid,
+) -> Result<(), ApiError> {
+    let existing: Option<i16> =
+        sqlx::query_scalar("SELECT seat FROM lobby_members WHERE lobby_id=$1 AND user_id=$2")
+            .bind(lobby_id)
+            .bind(joining)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let active_elsewhere: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1 FROM lobby_members m JOIN game_lobbies l ON l.id=m.lobby_id
+            WHERE m.user_id=$1 AND m.lobby_id<>$2 AND l.status IN ('waiting','playing')
+        )",
+    )
+    .bind(joining)
+    .bind(lobby_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if active_elsewhere {
+        return Err(ApiError::conflict(
+            "That player has already joined another active table",
+        ));
+    }
+    if existing.is_some() {
+        return Ok(());
+    }
+    let seat: Option<i16> = sqlx::query_scalar(
+        "SELECT s::smallint FROM generate_series(1,3) AS s
+         WHERE NOT EXISTS(
+            SELECT 1 FROM lobby_members WHERE lobby_id=$1 AND seat=s::smallint
+         )
+         ORDER BY s LIMIT 1",
+    )
+    .bind(lobby_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let seat = seat.ok_or_else(|| ApiError::conflict("This table is full"))?;
+    sqlx::query("INSERT INTO lobby_members(lobby_id,user_id,seat) VALUES($1,$2,$3)")
+        .bind(lobby_id)
+        .bind(joining)
+        .bind(seat)
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 
@@ -450,8 +658,28 @@ async fn start_game(state: &AppState, user: &User, lobby_id: Uuid) -> Result<(),
     let json =
         serde_json::to_value(&game).map_err(|_| ApiError::internal("Could not serialize game"))?;
     sqlx::query("UPDATE game_lobbies SET status='playing',game_state=$2,updated_at=CURRENT_TIMESTAMP WHERE id=$1").bind(lobby_id).bind(json).execute(&mut *tx).await?;
+    if state.ably.is_some() {
+        for (seat, member) in names.iter().enumerate() {
+            let Some((user_id, _)) = member else {
+                continue;
+            };
+            enqueue_outbox(
+                &mut tx,
+                &format!("ludo:user:{user_id}"),
+                "event",
+                &ServerMessage::GameStarted {
+                    lobby_id,
+                    player: player_id(u8::try_from(seat).unwrap_or(0)),
+                    model: GameViewModel::from(&game),
+                },
+            )
+            .await?;
+        }
+    }
     tx.commit().await?;
-    broadcast_game_started(state, lobby_id, &game).await?;
+    if state.ably.is_none() {
+        broadcast_game_started(state, lobby_id, &game).await?;
+    }
     broadcast_lobbies(state).await;
     Ok(())
 }
@@ -503,8 +731,58 @@ async fn apply_action(
     };
     sqlx::query("UPDATE game_lobbies SET game_state=$2,status=$3::lobby_status,updated_at=CURRENT_TIMESTAMP WHERE id=$1")
         .bind(lobby_id).bind(serde_json::to_value(&game).map_err(|_| ApiError::internal("Could not save game"))?).bind(status).execute(&mut *tx).await?;
+    if game.status() == GameStatus::Finished {
+        let member_rows =
+            sqlx::query("SELECT seat,user_id FROM lobby_members WHERE lobby_id=$1 ORDER BY seat")
+                .bind(lobby_id)
+                .fetch_all(&mut *tx)
+                .await?;
+        let mut player_ids = vec![serde_json::Value::Null; 4];
+        let mut winner_user_id = None;
+        let winner_seat = game.rankings().first().map(|winner| winner.index());
+        for member in member_rows {
+            let seat = usize::try_from(member.get::<i16, _>(0)).unwrap_or(4);
+            let member_id: Uuid = member.get(1);
+            if seat < player_ids.len() {
+                player_ids[seat] = serde_json::Value::String(member_id.to_string());
+            }
+            if Some(seat) == winner_seat {
+                winner_user_id = Some(member_id);
+            }
+        }
+        sqlx::query(
+            "INSERT INTO match_results(id,lobby_id,winner_user_id,player_ids,final_state)
+             VALUES($1,$2,$3,$4,$5) ON CONFLICT(lobby_id) DO NOTHING",
+        )
+        .bind(Uuid::new_v4())
+        .bind(lobby_id)
+        .bind(winner_user_id)
+        .bind(serde_json::Value::Array(player_ids))
+        .bind(
+            serde_json::to_value(&game)
+                .map_err(|_| ApiError::internal("Could not save match result"))?,
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    if state.ably.is_some() {
+        let users: Vec<Uuid> =
+            sqlx::query_scalar("SELECT user_id FROM lobby_members WHERE lobby_id=$1")
+                .bind(lobby_id)
+                .fetch_all(&mut *tx)
+                .await?;
+        let message = ServerMessage::State {
+            lobby_id,
+            model: GameViewModel::from(&game),
+        };
+        for user_id in users {
+            enqueue_outbox(&mut tx, &format!("ludo:user:{user_id}"), "event", &message).await?;
+        }
+    }
     tx.commit().await?;
-    broadcast_state(state, lobby_id, &game).await?;
+    if state.ably.is_none() {
+        broadcast_state(state, lobby_id, &game).await?;
+    }
     Ok(())
 }
 
@@ -517,8 +795,14 @@ fn run_bots(game: &mut GameState) {
         let command = match game.phase() {
             TurnPhase::AwaitingRoll => random_roll(),
             TurnPhase::AwaitingMove { legal_tokens, .. } => {
-                let index = rand::rng().random_range(0..legal_tokens.len());
-                GameCommand::Move(legal_tokens[index])
+                let difficulty = game.current().player.bot_difficulty;
+                let decision = ParallelBot::choose(
+                    &BotRequest::new(game.clone(), difficulty).with_thinking_time_ms(0),
+                );
+                let Some(token) = decision.token.or_else(|| legal_tokens.first().copied()) else {
+                    break;
+                };
+                GameCommand::Move(token)
             }
         };
         if game.apply(command).is_err() {
@@ -595,11 +879,42 @@ async fn send_lobbies(state: &AppState, user: &User) {
                 state,
                 user.id,
                 ServerMessage::Error {
+                    command_id: None,
+                    code: "lobby_list_failed",
                     message: "Could not load games".to_owned(),
+                    recoverable: true,
                 },
             )
             .await;
         }
+    }
+}
+
+async fn resume_user_state(state: &AppState, user: &User) {
+    let row = sqlx::query(
+        "SELECT l.id,l.status::text
+         FROM lobby_members m
+         JOIN game_lobbies l ON l.id=m.lobby_id
+         WHERE m.user_id=$1 AND l.status IN ('waiting','playing')
+         ORDER BY l.updated_at DESC
+         LIMIT 1",
+    )
+    .bind(user.id)
+    .fetch_optional(&state.db)
+    .await;
+    match row {
+        Ok(Some(row)) if row.get::<String, _>(1) == "playing" => {
+            if let Err(error) = sync_game(state, user, row.get(0)).await {
+                tracing::warn!(user_id=%user.id, message=%error.1, "failed to resume game");
+            }
+        }
+        Ok(Some(row)) => {
+            if let Err(error) = send_lobby_to(state, row.get(0), user.id).await {
+                tracing::warn!(user_id=%user.id, message=%error.1, "failed to resume lobby");
+            }
+        }
+        Ok(None) => {}
+        Err(error) => tracing::error!(%error, user_id=%user.id, "failed to query resumable state"),
     }
 }
 
@@ -727,6 +1042,84 @@ async fn publish_ably<T: Serialize + ?Sized>(
     }
 }
 
+async fn enqueue_outbox<T: Serialize + ?Sized>(
+    tx: &mut Transaction<'_, Postgres>,
+    channel: &str,
+    event_name: &str,
+    data: &T,
+) -> Result<(), ApiError> {
+    let payload =
+        serde_json::to_value(data).map_err(|_| ApiError::internal("Could not queue update"))?;
+    sqlx::query("INSERT INTO realtime_outbox(channel,event_name,payload) VALUES($1,$2,$3)")
+        .bind(channel)
+        .bind(event_name)
+        .bind(payload)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+async fn run_outbox(state: AppState) {
+    let mut cleanup_counter = 0_u16;
+    loop {
+        let rows = sqlx::query(
+            "UPDATE realtime_outbox
+             SET attempts=attempts+1,next_attempt_at=CURRENT_TIMESTAMP+INTERVAL '30 seconds'
+             WHERE id IN (
+               SELECT id FROM realtime_outbox
+               WHERE published_at IS NULL AND next_attempt_at<=CURRENT_TIMESTAMP
+               ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 50
+             )
+             RETURNING id,channel,event_name,payload",
+        )
+        .fetch_all(&state.db)
+        .await;
+        match rows {
+            Ok(rows) => {
+                for row in rows {
+                    let id: i64 = row.get(0);
+                    let channel: String = row.get(1);
+                    let event_name: String = row.get(2);
+                    let payload: serde_json::Value = row.get(3);
+                    if publish_ably(&state, &channel, &event_name, &payload).await
+                        && let Err(error) = sqlx::query(
+                            "UPDATE realtime_outbox SET published_at=CURRENT_TIMESTAMP WHERE id=$1",
+                        )
+                        .bind(id)
+                        .execute(&state.db)
+                        .await
+                    {
+                        tracing::error!(%error, outbox_id=id, "could not complete outbox event");
+                    }
+                }
+            }
+            Err(error) => tracing::error!(%error, "could not claim realtime outbox events"),
+        }
+        cleanup_counter = cleanup_counter.wrapping_add(1);
+        if cleanup_counter == 0 {
+            if let Err(error) = sqlx::query(
+                "DELETE FROM processed_commands
+                 WHERE processed_at<CURRENT_TIMESTAMP-INTERVAL '24 hours'",
+            )
+            .execute(&state.db)
+            .await
+            {
+                tracing::debug!(%error, "processed command cleanup deferred");
+            }
+            if let Err(error) = sqlx::query(
+                "DELETE FROM realtime_outbox
+                 WHERE published_at<CURRENT_TIMESTAMP-INTERVAL '7 days'",
+            )
+            .execute(&state.db)
+            .await
+            {
+                tracing::debug!(%error, "outbox cleanup deferred");
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+    }
+}
+
 fn validate_lobby_options(preset: &str, difficulty: &str) -> Result<(), ApiError> {
     if !["classic", "quick", "tournament"].contains(&preset)
         || !["easy", "medium", "hard"].contains(&difficulty)
@@ -751,6 +1144,26 @@ fn parse_difficulty(value: &str) -> BotDifficulty {
 }
 fn player_id(index: u8) -> PlayerId {
     PlayerId::new(index).unwrap_or_else(|| std::process::abort())
+}
+
+fn cors_layer() -> Result<CorsLayer, Box<dyn std::error::Error>> {
+    let Ok(origins) = env::var("LUDO_ALLOWED_ORIGINS") else {
+        tracing::warn!(
+            "LUDO_ALLOWED_ORIGINS is unset; allowing all origins for backward compatibility"
+        );
+        return Ok(CorsLayer::permissive());
+    };
+    let origins = origins
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(|origin| origin.trim_end_matches('/'))
+        .map(str::parse)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods(Any)
+        .allow_headers(Any))
 }
 
 async fn register(
@@ -844,6 +1257,19 @@ fn bearer(headers: &HeaderMap) -> Result<&str, ApiError> {
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or_else(|| ApiError::unauthorized("Login required"))
 }
+fn websocket_token(headers: &HeaderMap) -> Result<&str, ApiError> {
+    headers
+        .get("sec-websocket-protocol")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .find(|value| *value != "ludo")
+        })
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::unauthorized("Login required"))
+}
 fn token_hash(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
 }
@@ -895,10 +1321,31 @@ impl ApiError {
     fn internal(m: &str) -> Self {
         Self(StatusCode::INTERNAL_SERVER_ERROR, m.to_owned())
     }
+    fn code(&self) -> &'static str {
+        match self.1.as_str() {
+            "Game not found" => "game_not_found",
+            "The game advanced; refreshing the board" => "stale_revision",
+            "This table is full" => "lobby_full",
+            "Only the host can start this game" => "host_required",
+            _ if self.0 == StatusCode::UNAUTHORIZED => "unauthorized",
+            _ if self.0 == StatusCode::CONFLICT => "conflict",
+            _ if self.0 == StatusCode::BAD_REQUEST => "invalid_request",
+            _ => "internal_error",
+        }
+    }
 }
 impl From<sqlx::Error> for ApiError {
-    fn from(_: sqlx::Error) -> Self {
-        Self::internal("Database operation failed")
+    fn from(error: sqlx::Error) -> Self {
+        tracing::error!(%error, "database operation failed");
+        let conflict = error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .is_some_and(|code| matches!(code.as_ref(), "23505" | "40001" | "40P01"));
+        if conflict {
+            Self::conflict("The table changed while processing that request. Please try again.")
+        } else {
+            Self::internal("Database operation failed")
+        }
     }
 }
 impl IntoResponse for ApiError {
@@ -909,7 +1356,8 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AblyConfig, create_ably_jwt};
+    use super::{AblyConfig, create_ably_jwt, websocket_token};
+    use axum::http::{HeaderMap, HeaderValue};
     use uuid::Uuid;
 
     #[test]
@@ -921,5 +1369,15 @@ mod tests {
         };
         let token = create_ably_jwt(&config, Uuid::nil());
         assert!(token.is_ok_and(|value| value.matches('.').count() == 2));
+    }
+
+    #[test]
+    fn websocket_session_token_is_read_from_the_protocol_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "sec-websocket-protocol",
+            HeaderValue::from_static("ludo, session-token"),
+        );
+        assert_eq!(websocket_token(&headers).ok(), Some("session-token"));
     }
 }

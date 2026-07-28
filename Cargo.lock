@@ -2477,6 +2477,7 @@ dependencies = [
  "axum",
  "futures-util",
  "jsonwebtoken",
+ "ludo-ai",
  "ludo-domain",
  "ludo-presentation",
  "rand 0.10.2",

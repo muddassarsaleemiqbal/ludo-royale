@@ -257,8 +257,26 @@ button { font: inherit; }
 }
 
 .online-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgb(252 165 165 / 20%);
+  border-radius: 10px;
+  background: rgb(127 29 29 / 16%);
   color: #fca5a5;
   font-size: 0.85rem;
+}
+.online-error button {
+  flex: none;
+  padding: 0 2px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
 }
 
 .setup-shell {

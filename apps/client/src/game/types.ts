@@ -38,6 +38,7 @@ export type BotDecision = {
 
 export type GameAction =
   | "NewGame"
+  | { NewGameWith: { preset: "Classic" | "Quick" | "Tournament"; bot_difficulty: "Easy" | "Medium" | "Hard" } }
   | "Roll"
   | { SelectToken: number }
   | { ContinueBot: number }

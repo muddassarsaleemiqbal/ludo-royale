@@ -51,9 +51,12 @@ ABLY_API_KEY=your-app-id.your-key-id:your-key-secret \
 ```
 
 Create a free Ably app, copy a server API key from **API Keys**, and place it
-in `ABLY_API_KEY`. The key must have publish capability. The existing Axum
-WebSocket remains available as a local fallback and carries player commands;
-Ably provides scalable cross-instance event delivery.
+in `ABLY_API_KEY`. The key needs `publish` for server fan-out and `subscribe`
+so the server can mint narrowly scoped, read-only client tokens. It does not
+need presence, history, or channel-management permissions. The existing Axum
+WebSocket carries authenticated player commands; Ably provides scalable
+cross-instance event delivery. Critical game events use a PostgreSQL outbox,
+so a temporary Ably failure is retried instead of losing an accepted move.
 
 For local development, the client defaults to `http://localhost:8080`. For
 production, deploy the `ludo-server` Rust binary with a PostgreSQL

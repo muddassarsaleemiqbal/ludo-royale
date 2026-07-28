@@ -10,6 +10,7 @@ argon2 = "0.5"
 axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+ludo-ai = { path = "../ludo-ai", default-features = false }
 ludo-domain = { path = "../ludo-domain" }
 ludo-presentation = { path = "../ludo-presentation" }
 rand.workspace = true

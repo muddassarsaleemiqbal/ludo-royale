@@ -1,12 +1,12 @@
 //! Platform-neutral game orchestration.
 
-use ludo_ai::{BotDecision, BotRequest, Difficulty};
+use ludo_ai::{BotDecision, BotRequest};
 use std::sync::Arc;
 
 use ludo_application::{ApplicationError, DiceSource, GameSession};
 use ludo_domain::{
-    Controller, DiceValue, GameCommand, GameState, GameStatus, PlayerId, Rules, TokenId, TurnPhase,
-    standard_players,
+    BotDifficulty, Controller, DiceValue, GameCommand, GameState, GameStatus, PlayerId, RulePreset,
+    TokenId, TurnPhase, standard_players,
 };
 use ludo_presentation::GameViewModel;
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,13 @@ pub struct EffectId(pub u64);
 pub enum UiAction {
     /// Start a new standard match.
     NewGame,
+    /// Start a new local match with the selected rules and AI strength.
+    NewGameWith {
+        /// Named rule configuration.
+        preset: RulePreset,
+        /// Strength applied to all computer-controlled seats.
+        bot_difficulty: BotDifficulty,
+    },
     /// Request a human dice roll.
     Roll,
     /// Select one human-controlled token.
@@ -168,7 +175,17 @@ impl GameRuntime {
     fn apply_action(&mut self, action: UiAction) -> Result<Vec<RuntimeEffect>, RuntimeError> {
         match action {
             UiAction::NewGame => {
-                self.session.restore(standard_state());
+                self.session
+                    .restore(configured_state(RulePreset::Classic, BotDifficulty::Hard));
+                self.pending = None;
+                Ok(Vec::new())
+            }
+            UiAction::NewGameWith {
+                preset,
+                bot_difficulty,
+            } => {
+                self.session
+                    .restore(configured_state(preset, bot_difficulty));
                 self.pending = None;
                 Ok(Vec::new())
             }
@@ -272,7 +289,10 @@ impl GameRuntime {
         self.pending = Some(PendingEffect::Bot(effect));
         RuntimeEffect::EvaluateBot {
             effect,
-            request: BotRequest::new(self.session.state().clone(), Difficulty::Hard),
+            request: BotRequest::new(
+                self.session.state().clone(),
+                self.session.state().current().player.bot_difficulty,
+            ),
         }
     }
 
@@ -301,7 +321,17 @@ impl DiceSource for PlatformDice {
 }
 
 fn standard_state() -> GameState {
-    GameState::new(standard_players(), Rules::default()).unwrap_or_else(|_| std::process::abort())
+    configured_state(RulePreset::Classic, BotDifficulty::Hard)
+}
+
+fn configured_state(preset: RulePreset, bot_difficulty: BotDifficulty) -> GameState {
+    let mut players = standard_players();
+    for player in &mut players {
+        if player.controller == Controller::Bot {
+            player.bot_difficulty = bot_difficulty;
+        }
+    }
+    GameState::new(players, preset.rules()).unwrap_or_else(|_| std::process::abort())
 }
 
 /// Converts a raw value supplied by a platform into a valid dice result.
@@ -346,6 +376,25 @@ mod tests {
                     value: DiceValue::new(1).unwrap_or_else(|| std::process::abort()),
                 })
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn configured_game_applies_rules_and_bot_strength() {
+        let mut runtime = GameRuntime::standard();
+        let result = runtime.dispatch(UiAction::NewGameWith {
+            preset: RulePreset::Quick,
+            bot_difficulty: BotDifficulty::Easy,
+        });
+        assert!(result.is_ok());
+        assert_eq!(runtime.state().rules(), RulePreset::Quick.rules());
+        assert!(
+            runtime
+                .state()
+                .players()
+                .iter()
+                .filter(|player| player.player.controller == Controller::Bot)
+                .all(|player| player.player.bot_difficulty == BotDifficulty::Easy)
         );
     }
 }
