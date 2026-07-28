@@ -90,10 +90,12 @@ const BoardToken = memo(function BoardToken({
 
 export const LudoBoard = memo(function LudoBoard({
   tokens,
-  onSelect
+  onSelect,
+  showSafeCells = true
 }: {
   tokens: TokenViewModel[];
   onSelect(token: number): void;
+  showSafeCells?: boolean;
 }) {
   const cells = useMemo(() => Array.from({ length: 225 }, (_, index) => {
     const row = Math.floor(index / 15);
@@ -105,15 +107,15 @@ export const LudoBoard = memo(function LudoBoard({
         key={index}
         aria-hidden="true"
       >
-        {safe && <ShieldCheck className="safe-mark" />}
+        {safe && showSafeCells && <ShieldCheck className="safe-mark" />}
       </div>
     );
-  }), []);
+  }), [showSafeCells]);
 
   return (
     <div className="board-frame">
       <div className="board-glow" />
-      <div className="ludo-board" aria-label="Ludo board">
+      <div className="ludo-board" role="group" aria-label="Ludo board. Shield symbols mark safe cells.">
         {cells}
         <div className="home-crown" aria-hidden="true">♛</div>
         {tokens.map((token) => (

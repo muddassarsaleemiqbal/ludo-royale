@@ -57,6 +57,12 @@ need presence, history, or channel-management permissions. The existing Axum
 WebSocket carries authenticated player commands; Ably provides scalable
 cross-instance event delivery. Critical game events use a PostgreSQL outbox,
 so a temporary Ably failure is retried instead of losing an accepted move.
+Online turns have a 30-second server-authoritative deadline. A disconnected or
+inactive player keeps their seat during that grace period, after which the
+configured AI advances the turn so a match cannot be held indefinitely.
+`GET /health/ready` verifies database readiness for Railway health checks.
+Optionally set `LUDO_ALERT_WEBHOOK` to receive a JSON alert after repeated Ably
+delivery failures.
 
 For local development, the client defaults to `http://localhost:8080`. For
 production, deploy the `ludo-server` Rust binary with a PostgreSQL

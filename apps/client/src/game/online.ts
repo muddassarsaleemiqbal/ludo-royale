@@ -20,14 +20,19 @@ type Snapshot = {
   player: number | null; connected: boolean; realtimeConnected: boolean;
   lobbies: LobbySummary[]; lobby: Lobby | null; error: string | null;
   pending: string | null;
+  toast: string | null;
+  rulePreset: string | null;
+  botDifficulty: string | null;
+  turnDeadline: number | null;
 };
 type ServerMessage =
   | { type: "ready"; user: User }
   | { type: "lobby_list"; lobbies: LobbySummary[] }
   | { type: "lobby"; lobby: Lobby }
   | { type: "join_requested"; lobby_id: string }
-  | { type: "game_started"; lobby_id: string; player: number; model: GameViewModel }
-  | { type: "state"; lobby_id: string; model: GameViewModel }
+  | { type: "join_decision"; lobby_id: string; accepted: boolean }
+  | { type: "game_started"; lobby_id: string; player: number; model: GameViewModel; turn_seconds: number }
+  | { type: "state"; lobby_id: string; model: GameViewModel; turn_seconds: number }
   | { type: "ack"; command_id: string }
   | {
       type: "error"; command_id: string | null; code: string;
@@ -51,6 +56,7 @@ class OnlineStore {
     user: null, model: null, lobbyId: localStorage.getItem(lobbyKey), player: null,
     connected: false, realtimeConnected: false, lobbies: [], lobby: null,
     error: null, pending: null
+    , toast: null, rulePreset: null, botDifficulty: null, turnDeadline: null
   };
 
   subscribe = (listener: () => void) => {
@@ -105,6 +111,7 @@ class OnlineStore {
   }
 
   clearError() { this.set({ error: null }); }
+  clearToast() { this.set({ toast: null }); }
   listLobbies() { this.send({ type: "list_lobbies" }); }
   createLobby(options: { name: string; rule_preset: string; bot_difficulty: string }) {
     this.command("create", { type: "create_lobby", ...options, is_public: true });
@@ -243,21 +250,35 @@ class OnlineStore {
       return;
     }
     if (value.type === "join_requested") {
-      this.set({ pending: null, error: null });
+      this.set({ pending: null, error: null, toast: "Join request sent to the host." });
+      return;
+    }
+    if (value.type === "join_decision") {
+      this.set({
+        pending: null,
+        error: null,
+        toast: value.accepted ? "Your seat was accepted. Welcome to the table!" : "The host declined your join request."
+      });
       return;
     }
     if (value.type === "game_started") {
       localStorage.setItem(lobbyKey, value.lobby_id);
       this.set({
         lobby: null, lobbyId: value.lobby_id, player: value.player,
-        model: value.model, pending: null, error: null
+        model: value.model, pending: null, error: null,
+        rulePreset: this.snapshot.lobby?.rule_preset ?? this.snapshot.rulePreset,
+        botDifficulty: this.snapshot.lobby?.bot_difficulty ?? this.snapshot.botDifficulty,
+        turnDeadline: Date.now() + value.turn_seconds * 1000
       });
       return;
     }
     if (value.type === "state") {
       if (this.snapshot.lobbyId && value.lobby_id !== this.snapshot.lobbyId) return;
       if (this.snapshot.model && value.model.revision < this.snapshot.model.revision) return;
-      this.set({ model: value.model, pending: null, error: null });
+      this.set({
+        model: value.model, pending: null, error: null,
+        turnDeadline: Date.now() + value.turn_seconds * 1000
+      });
       return;
     }
     if (value.command_id) this.commands.delete(value.command_id);
@@ -298,6 +319,7 @@ class OnlineStore {
     this.snapshot = {
       user: null, model: null, lobbyId: null, player: null, connected: false,
       realtimeConnected: false, lobbies: [], lobby: null, error: null, pending: null
+      , toast: null, rulePreset: null, botDifficulty: null, turnDeadline: null
     };
     this.emit();
   }

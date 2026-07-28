@@ -83,6 +83,53 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  multiplayer-e2e:
+    name: Multiplayer browser journey
+    needs: web
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ludo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ludo"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ludo
+      LUDO_ALLOWED_ORIGINS: http://127.0.0.1:4173
+      VITE_API_URL: http://127.0.0.1:8080
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.17.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/client/pnpm-lock.yaml
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: e2e
+      - run: pnpm --dir apps/client install --frozen-lockfile
+      - run: pnpm --dir apps/client exec playwright install --with-deps chromium
+      - run: pnpm --dir apps/client build
+      - name: Start multiplayer server
+        run: |
+          cargo run --locked -p ludo-server >server.log 2>&1 &
+          for attempt in {1..180}; do
+            curl --fail --silent http://127.0.0.1:8080/health/ready && exit 0
+            sleep 1
+          done
+          cat server.log
+          exit 1
+      - run: pnpm --dir apps/client test:e2e
+
   security:
     name: Dependency security audit
     runs-on: ubuntu-24.04

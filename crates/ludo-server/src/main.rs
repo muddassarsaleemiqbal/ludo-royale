@@ -1,9 +1,9 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     env,
     net::SocketAddr,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use argon2::{
@@ -40,12 +40,15 @@ use tower_http::{
 use uuid::Uuid;
 
 const SESSION_SECONDS: i64 = 60 * 60 * 24 * 30;
+const TURN_SECONDS: u16 = 30;
 
 #[derive(Clone)]
 struct AppState {
     db: PgPool,
     sockets: Arc<Mutex<HashMap<Uuid, mpsc::UnboundedSender<ServerMessage>>>>,
     ably: Option<AblyConfig>,
+    rate_limits: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
+    alert_webhook: Option<String>,
 }
 
 #[derive(Clone)]
@@ -184,14 +187,20 @@ enum ServerMessage {
     JoinRequested {
         lobby_id: Uuid,
     },
+    JoinDecision {
+        lobby_id: Uuid,
+        accepted: bool,
+    },
     GameStarted {
         lobby_id: Uuid,
         player: PlayerId,
         model: GameViewModel,
+        turn_seconds: u16,
     },
     State {
         lobby_id: Uuid,
         model: GameViewModel,
+        turn_seconds: u16,
     },
     Ack {
         command_id: Uuid,
@@ -225,12 +234,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     http: reqwest::Client::new(),
                 })
         }),
+        rate_limits: Arc::new(Mutex::new(HashMap::new())),
+        alert_webhook: env::var("LUDO_ALERT_WEBHOOK").ok(),
     };
     if state.ably.is_some() {
         tokio::spawn(run_outbox(state.clone()));
     }
+    tokio::spawn(run_match_supervisor(state.clone()));
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route("/health/ready", get(health_ready))
         .route("/api/auth/register", post(register))
         .route("/api/auth/login", post(login))
         .route("/api/auth/logout", post(logout))
@@ -256,6 +269,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
     Ok(())
+}
+
+async fn health_ready(State(state): State<AppState>) -> Result<&'static str, ApiError> {
+    sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&state.db)
+        .await?;
+    Ok("ready")
 }
 
 async fn websocket(
@@ -335,48 +355,7 @@ async fn online_socket(state: AppState, user: User, socket: WebSocket) {
             continue;
         }
         match serde_json::from_str::<ClientEnvelope>(&text) {
-            Ok(envelope) => {
-                if command_was_processed(&state, user.id, envelope.command_id).await {
-                    send_to(
-                        &state,
-                        user.id,
-                        ServerMessage::Ack {
-                            command_id: envelope.command_id,
-                        },
-                    )
-                    .await;
-                    continue;
-                }
-                if let Err(error) = handle_online(&state, &user, envelope.message).await {
-                    tracing::warn!(
-                        user_id = %user.id,
-                        status = %error.0,
-                        message = %error.1,
-                        "online command failed"
-                    );
-                    send_to(
-                        &state,
-                        user.id,
-                        ServerMessage::Error {
-                            command_id: Some(envelope.command_id),
-                            code: error.code(),
-                            recoverable: error.0 != StatusCode::UNAUTHORIZED,
-                            message: error.1,
-                        },
-                    )
-                    .await;
-                } else {
-                    record_processed_command(&state, user.id, envelope.command_id).await;
-                    send_to(
-                        &state,
-                        user.id,
-                        ServerMessage::Ack {
-                            command_id: envelope.command_id,
-                        },
-                    )
-                    .await;
-                }
-            }
+            Ok(envelope) => handle_envelope(&state, &user, envelope).await,
             Err(_) => {
                 send_to(
                     &state,
@@ -394,6 +373,58 @@ async fn online_socket(state: AppState, user: User, socket: WebSocket) {
     }
     state.sockets.lock().await.remove(&user.id);
     writer.abort();
+}
+
+async fn handle_envelope(state: &AppState, user: &User, envelope: ClientEnvelope) {
+    let result = enforce_rate_limit(state, &format!("command:{}", user.id), 90).await;
+    if let Err(error) = result {
+        send_command_error(state, user.id, envelope.command_id, error).await;
+        return;
+    }
+    if command_was_processed(state, user.id, envelope.command_id).await {
+        send_to(
+            state,
+            user.id,
+            ServerMessage::Ack {
+                command_id: envelope.command_id,
+            },
+        )
+        .await;
+        return;
+    }
+    if let Err(error) = handle_online(state, user, envelope.message).await {
+        tracing::warn!(
+            user_id = %user.id,
+            status = %error.0,
+            message = %error.1,
+            "online command failed"
+        );
+        send_command_error(state, user.id, envelope.command_id, error).await;
+    } else {
+        record_processed_command(state, user.id, envelope.command_id).await;
+        send_to(
+            state,
+            user.id,
+            ServerMessage::Ack {
+                command_id: envelope.command_id,
+            },
+        )
+        .await;
+    }
+}
+
+async fn send_command_error(state: &AppState, user_id: Uuid, command_id: Uuid, error: ApiError) {
+    send_to(
+        state,
+        user_id,
+        ServerMessage::Error {
+            command_id: Some(command_id),
+            code: error.code(),
+            recoverable: error.0 != StatusCode::UNAUTHORIZED,
+            message: error.1,
+        },
+    )
+    .await;
 }
 
 async fn command_was_processed(state: &AppState, user_id: Uuid, command_id: Uuid) -> bool {
@@ -566,6 +597,15 @@ async fn respond_join(
         .await?;
     tx.commit().await?;
     send_lobby(state, lobby_id).await?;
+    send_to(
+        state,
+        joining,
+        ServerMessage::JoinDecision {
+            lobby_id,
+            accepted: accept,
+        },
+    )
+    .await;
     broadcast_lobbies(state).await;
     Ok(())
 }
@@ -657,7 +697,7 @@ async fn start_game(state: &AppState, user: &User, lobby_id: Uuid) -> Result<(),
         .map_err(|_| ApiError::internal("Could not create game"))?;
     let json =
         serde_json::to_value(&game).map_err(|_| ApiError::internal("Could not serialize game"))?;
-    sqlx::query("UPDATE game_lobbies SET status='playing',game_state=$2,updated_at=CURRENT_TIMESTAMP WHERE id=$1").bind(lobby_id).bind(json).execute(&mut *tx).await?;
+    sqlx::query("UPDATE game_lobbies SET status='playing',game_state=$2,turn_deadline=CURRENT_TIMESTAMP+($3::text||' seconds')::interval,updated_at=CURRENT_TIMESTAMP WHERE id=$1").bind(lobby_id).bind(json).bind(TURN_SECONDS.to_string()).execute(&mut *tx).await?;
     if state.ably.is_some() {
         for (seat, member) in names.iter().enumerate() {
             let Some((user_id, _)) = member else {
@@ -671,6 +711,7 @@ async fn start_game(state: &AppState, user: &User, lobby_id: Uuid) -> Result<(),
                     lobby_id,
                     player: player_id(u8::try_from(seat).unwrap_or(0)),
                     model: GameViewModel::from(&game),
+                    turn_seconds: TURN_SECONDS,
                 },
             )
             .await?;
@@ -696,6 +737,7 @@ async fn sync_game(state: &AppState, user: &User, lobby_id: Uuid) -> Result<(), 
             lobby_id,
             player: player_id(u8::try_from(row.get::<i16, _>(1)).unwrap_or(0)),
             model: GameViewModel::from(&game),
+            turn_seconds: TURN_SECONDS,
         },
     )
     .await;
@@ -729,8 +771,8 @@ async fn apply_action(
     } else {
         "playing"
     };
-    sqlx::query("UPDATE game_lobbies SET game_state=$2,status=$3::lobby_status,updated_at=CURRENT_TIMESTAMP WHERE id=$1")
-        .bind(lobby_id).bind(serde_json::to_value(&game).map_err(|_| ApiError::internal("Could not save game"))?).bind(status).execute(&mut *tx).await?;
+    sqlx::query("UPDATE game_lobbies SET game_state=$2,status=$3::lobby_status,turn_deadline=CASE WHEN $3='playing' THEN CURRENT_TIMESTAMP+($4::text||' seconds')::interval ELSE NULL END,updated_at=CURRENT_TIMESTAMP WHERE id=$1")
+        .bind(lobby_id).bind(serde_json::to_value(&game).map_err(|_| ApiError::internal("Could not save game"))?).bind(status).bind(TURN_SECONDS.to_string()).execute(&mut *tx).await?;
     if game.status() == GameStatus::Finished {
         let member_rows =
             sqlx::query("SELECT seat,user_id FROM lobby_members WHERE lobby_id=$1 ORDER BY seat")
@@ -774,6 +816,7 @@ async fn apply_action(
         let message = ServerMessage::State {
             lobby_id,
             model: GameViewModel::from(&game),
+            turn_seconds: TURN_SECONDS,
         };
         for user_id in users {
             enqueue_outbox(&mut tx, &format!("ludo:user:{user_id}"), "event", &message).await?;
@@ -835,6 +878,7 @@ async fn broadcast_game_started(
                 lobby_id,
                 player: player_id(u8::try_from(row.get::<i16, _>(1)).unwrap_or(0)),
                 model: GameViewModel::from(game),
+                turn_seconds: TURN_SECONDS,
             },
         )
         .await;
@@ -859,6 +903,7 @@ async fn broadcast_state(
             ServerMessage::State {
                 lobby_id,
                 model: GameViewModel::from(game),
+                turn_seconds: TURN_SECONDS,
             },
         )
         .await;
@@ -1070,7 +1115,7 @@ async fn run_outbox(state: AppState) {
                WHERE published_at IS NULL AND next_attempt_at<=CURRENT_TIMESTAMP
                ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 50
              )
-             RETURNING id,channel,event_name,payload",
+             RETURNING id,channel,event_name,payload,attempts",
         )
         .fetch_all(&state.db)
         .await;
@@ -1081,7 +1126,9 @@ async fn run_outbox(state: AppState) {
                     let channel: String = row.get(1);
                     let event_name: String = row.get(2);
                     let payload: serde_json::Value = row.get(3);
-                    if publish_ably(&state, &channel, &event_name, &payload).await
+                    let attempts: i32 = row.get(4);
+                    let published = publish_ably(&state, &channel, &event_name, &payload).await;
+                    if published
                         && let Err(error) = sqlx::query(
                             "UPDATE realtime_outbox SET published_at=CURRENT_TIMESTAMP WHERE id=$1",
                         )
@@ -1090,6 +1137,14 @@ async fn run_outbox(state: AppState) {
                         .await
                     {
                         tracing::error!(%error, outbox_id=id, "could not complete outbox event");
+                    }
+                    if !published && attempts == 5 {
+                        send_deployment_alert(
+                            &state,
+                            "Ably delivery is failing",
+                            &format!("Outbox event {id} failed five times on channel {channel}"),
+                        )
+                        .await;
                     }
                 }
             }
@@ -1116,8 +1171,131 @@ async fn run_outbox(state: AppState) {
                 tracing::debug!(%error, "outbox cleanup deferred");
             }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+        tokio::time::sleep(Duration::from_millis(750)).await;
     }
+}
+
+async fn send_deployment_alert(state: &AppState, title: &str, detail: &str) {
+    let Some(webhook) = &state.alert_webhook else {
+        return;
+    };
+    if let Err(error) = reqwest::Client::new()
+        .post(webhook)
+        .json(&serde_json::json!({ "title": title, "detail": detail, "service": "ludo-server" }))
+        .send()
+        .await
+    {
+        tracing::warn!(%error, "could not send deployment alert");
+    }
+}
+
+async fn run_match_supervisor(state: AppState) {
+    loop {
+        if let Err(error) = advance_expired_turn(&state).await {
+            tracing::error!(status=%error.0, message=%error.1, "turn supervisor failed");
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn advance_expired_turn(state: &AppState) -> Result<(), ApiError> {
+    let mut tx = state.db.begin().await?;
+    let row = sqlx::query(
+        "SELECT id,game_state FROM game_lobbies
+         WHERE status='playing' AND turn_deadline<=CURRENT_TIMESTAMP
+         ORDER BY turn_deadline
+         FOR UPDATE SKIP LOCKED LIMIT 1",
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(row) = row else {
+        tx.rollback().await?;
+        return Ok(());
+    };
+    let lobby_id: Uuid = row.get(0);
+    let mut game: GameState = serde_json::from_value(row.get(1))
+        .map_err(|_| ApiError::internal("Stored game is invalid"))?;
+    let command = match game.phase() {
+        TurnPhase::AwaitingRoll => random_roll(),
+        TurnPhase::AwaitingMove { legal_tokens, .. } => {
+            let difficulty = game.current().player.bot_difficulty;
+            let decision = ParallelBot::choose(
+                &BotRequest::new(game.clone(), difficulty).with_thinking_time_ms(0),
+            );
+            let Some(token) = decision.token.or_else(|| legal_tokens.first().copied()) else {
+                return Ok(());
+            };
+            GameCommand::Move(token)
+        }
+    };
+    game.apply(command)
+        .map_err(|error| ApiError::bad_request(&error.to_string()))?;
+    run_bots(&mut game);
+    let status = if game.status() == GameStatus::Finished {
+        "finished"
+    } else {
+        "playing"
+    };
+    sqlx::query(
+        "UPDATE game_lobbies
+         SET game_state=$2,status=$3::lobby_status,
+             turn_deadline=CASE WHEN $3='playing'
+               THEN CURRENT_TIMESTAMP+($4::text||' seconds')::interval ELSE NULL END,
+             updated_at=CURRENT_TIMESTAMP
+         WHERE id=$1",
+    )
+    .bind(lobby_id)
+    .bind(serde_json::to_value(&game).map_err(|_| ApiError::internal("Could not save timed turn"))?)
+    .bind(status)
+    .bind(TURN_SECONDS.to_string())
+    .execute(&mut *tx)
+    .await?;
+    if state.ably.is_some() {
+        let users: Vec<Uuid> =
+            sqlx::query_scalar("SELECT user_id FROM lobby_members WHERE lobby_id=$1")
+                .bind(lobby_id)
+                .fetch_all(&mut *tx)
+                .await?;
+        let message = ServerMessage::State {
+            lobby_id,
+            model: GameViewModel::from(&game),
+            turn_seconds: TURN_SECONDS,
+        };
+        for user_id in users {
+            enqueue_outbox(&mut tx, &format!("ludo:user:{user_id}"), "event", &message).await?;
+        }
+    }
+    tx.commit().await?;
+    tracing::info!(%lobby_id, "advanced expired player turn with temporary AI");
+    if state.ably.is_none() {
+        broadcast_state(state, lobby_id, &game).await?;
+    }
+    Ok(())
+}
+
+async fn enforce_rate_limit(
+    state: &AppState,
+    key: &str,
+    maximum_per_minute: usize,
+) -> Result<(), ApiError> {
+    let cutoff = Instant::now()
+        .checked_sub(Duration::from_mins(1))
+        .unwrap_or_else(Instant::now);
+    let mut limits = state.rate_limits.lock().await;
+    let attempts = limits.entry(key.to_owned()).or_default();
+    while attempts.front().is_some_and(|attempt| *attempt < cutoff) {
+        attempts.pop_front();
+    }
+    if attempts.len() >= maximum_per_minute {
+        return Err(ApiError::too_many_requests(
+            "Too many requests. Please wait a moment and try again.",
+        ));
+    }
+    attempts.push_back(Instant::now());
+    if limits.len() > 10_000 {
+        limits.retain(|_, attempts| attempts.back().is_some_and(|attempt| *attempt >= cutoff));
+    }
+    Ok(())
 }
 
 fn validate_lobby_options(preset: &str, difficulty: &str) -> Result<(), ApiError> {
@@ -1171,6 +1349,7 @@ async fn register(
     Json(input): Json<Credentials>,
 ) -> Result<Json<AuthResponse>, ApiError> {
     let email = normalize_email(&input.email)?;
+    enforce_rate_limit(&state, &format!("register:{email}"), 5).await?;
     validate_password(&input.password)?;
     let display_name = normalize_name(input.display_name.as_deref().unwrap_or(""))?;
     let password_hash = hash_password(&input.password)?;
@@ -1198,6 +1377,7 @@ async fn login(
     Json(input): Json<Credentials>,
 ) -> Result<Json<AuthResponse>, ApiError> {
     let email = normalize_email(&input.email)?;
+    enforce_rate_limit(&state, &format!("login:{email}"), 10).await?;
     let row: (Uuid, String, String, String) =
         sqlx::query_as("SELECT id,email,display_name,password_hash FROM users WHERE email=$1")
             .bind(email)
@@ -1321,6 +1501,9 @@ impl ApiError {
     fn internal(m: &str) -> Self {
         Self(StatusCode::INTERNAL_SERVER_ERROR, m.to_owned())
     }
+    fn too_many_requests(m: &str) -> Self {
+        Self(StatusCode::TOO_MANY_REQUESTS, m.to_owned())
+    }
     fn code(&self) -> &'static str {
         match self.1.as_str() {
             "Game not found" => "game_not_found",
@@ -1329,6 +1512,7 @@ impl ApiError {
             "Only the host can start this game" => "host_required",
             _ if self.0 == StatusCode::UNAUTHORIZED => "unauthorized",
             _ if self.0 == StatusCode::CONFLICT => "conflict",
+            _ if self.0 == StatusCode::TOO_MANY_REQUESTS => "rate_limited",
             _ if self.0 == StatusCode::BAD_REQUEST => "invalid_request",
             _ => "internal_error",
         }

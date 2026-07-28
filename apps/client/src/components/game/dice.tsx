@@ -11,7 +11,12 @@ const PIPS: Record<number, Array<[number, number]>> = {
 
 export function Dice({ value, busy }: { value: number | null; busy: boolean }) {
   return (
-    <div className={cn("dice", busy && "is-rolling")} aria-label={value ? `Dice shows ${value}` : "Dice"}>
+    <div
+      className={cn("dice", busy && "is-rolling")}
+      role="img"
+      aria-live="polite"
+      aria-label={value ? `Dice shows ${value}` : busy ? "Dice rolling" : "Dice ready"}
+    >
       {(PIPS[value ?? 0] ?? []).map(([column, row], index) => (
         <span
           key={index}
