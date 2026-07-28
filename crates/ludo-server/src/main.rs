@@ -258,8 +258,12 @@ async fn ably_token(State(state): State<AppState>, headers: HeaderMap) -> Result
         .ably
         .as_ref()
         .ok_or_else(|| ApiError::internal("Ably is not configured"))?;
+    create_ably_jwt(ably, user.id)
+}
+
+fn create_ably_jwt(ably: &AblyConfig, user_id: Uuid) -> Result<String, ApiError> {
     let capability = serde_json::json!({
-        format!("ludo:user:{}", user.id): ["subscribe"],
+        format!("ludo:user:{user_id}"): ["subscribe"],
         "ludo:lobbies": ["subscribe"]
     })
     .to_string();
@@ -268,7 +272,7 @@ async fn ably_token(State(state): State<AppState>, headers: HeaderMap) -> Result
         iat: issued,
         exp: issued + 60 * 60,
         capability,
-        client_id: user.id.to_string(),
+        client_id: user_id.to_string(),
     };
     let mut header = Header::new(Algorithm::HS256);
     header.kid = Some(ably.key_name.clone());
@@ -900,5 +904,22 @@ impl From<sqlx::Error> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         (self.0, Json(serde_json::json!({"error":self.1}))).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AblyConfig, create_ably_jwt};
+    use uuid::Uuid;
+
+    #[test]
+    fn ably_jwt_signing_has_an_explicit_crypto_provider() {
+        let config = AblyConfig {
+            key_name: "app.key".to_owned(),
+            key_secret: "development-secret".to_owned(),
+            http: reqwest::Client::new(),
+        };
+        let token = create_ably_jwt(&config, Uuid::nil());
+        assert!(token.is_ok_and(|value| value.matches('.').count() == 2));
     }
 }
