@@ -114,6 +114,11 @@ function SetupScreen({ onLocal }: { onLocal: (setup: LocalSetup) => void }) {
   const [inviteCode, setInviteCode] = useState("");
   const [rulesFilter, setRulesFilter] = useState("all");
   const [occupancyFilter, setOccupancyFilter] = useState("all");
+  useEffect(() => {
+    if (!online.toast) return;
+    const timer = window.setTimeout(() => onlineStore.clearToast(), 5_000);
+    return () => window.clearTimeout(timer);
+  }, [online.toast]);
   const localSetup = (): LocalSetup => ({
     preset: (preset[0]?.toUpperCase() + preset.slice(1)) as LocalSetup["preset"],
     botDifficulty: (difficulty[0]?.toUpperCase() + difficulty.slice(1)) as LocalSetup["botDifficulty"]

@@ -303,8 +303,9 @@ html[data-motion="reduced"] *, html[data-motion="reduced"] *::before, html[data-
   display:flex; align-items:center; gap:14px; padding:13px 15px;
   border:1px solid rgba(82,220,149,.3); border-radius:14px; color:#c9f7dd;
   background:rgba(11,52,32,.96); box-shadow:0 18px 45px rgba(0,0,0,.38);
+  pointer-events:none;
 }
-.game-toast button { margin-left:auto; border:0; color:inherit; background:none; font-size:20px; cursor:pointer; }
+.game-toast button { margin-left:auto; border:0; color:inherit; background:none; font-size:20px; cursor:pointer; pointer-events:auto; }
 .dialog-actions { margin-top:22px; display:flex; justify-content:flex-end; gap:10px; }
 .results-overlay {
   position:fixed; z-index:90; inset:0; display:grid; place-items:center; padding:20px;
