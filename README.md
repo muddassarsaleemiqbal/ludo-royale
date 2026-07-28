@@ -64,6 +64,12 @@ configured AI advances the turn so a match cannot be held indefinitely.
 Optionally set `LUDO_ALERT_WEBHOOK` to receive a JSON alert after repeated Ably
 delivery failures.
 
+Multiplayer tables support public discovery or private invite links, ready
+checks, configurable 15–60 second turn clocks, database-backed presence,
+automatic host transfer, quick matching, spectators, moderated match chat,
+emoji reactions, activity history, and unanimous same-lineup rematches.
+Waiting rooms with no recently connected members are removed automatically.
+
 For local development, the client defaults to `http://localhost:8080`. For
 production, deploy the `ludo-server` Rust binary with a PostgreSQL
 `DATABASE_URL`, set `LUDO_ALLOWED_ORIGINS` to the Vercel URL, and define the

@@ -97,8 +97,15 @@ enum ClientMessage {
         rule_preset: String,
         bot_difficulty: String,
         is_public: bool,
+        turn_seconds: u16,
     },
     RequestJoin {
+        lobby_id: Uuid,
+    },
+    JoinByCode {
+        invite_code: String,
+    },
+    CancelJoin {
         lobby_id: Uuid,
     },
     RespondJoin {
@@ -106,6 +113,39 @@ enum ClientMessage {
         accept: bool,
     },
     LeaveLobby {
+        lobby_id: Uuid,
+    },
+    KickPlayer {
+        lobby_id: Uuid,
+        user_id: Uuid,
+    },
+    SetReady {
+        lobby_id: Uuid,
+        ready: bool,
+    },
+    UpdateLobby {
+        lobby_id: Uuid,
+        rule_preset: String,
+        bot_difficulty: String,
+        is_public: bool,
+        turn_seconds: u16,
+    },
+    QuickMatch {
+        rule_preset: String,
+        bot_difficulty: String,
+    },
+    Spectate {
+        lobby_id: Uuid,
+    },
+    Chat {
+        lobby_id: Uuid,
+        body: String,
+    },
+    React {
+        lobby_id: Uuid,
+        emoji: String,
+    },
+    VoteRematch {
         lobby_id: Uuid,
     },
     StartGame {
@@ -151,6 +191,8 @@ struct SeatView {
     user_id: Option<Uuid>,
     name: String,
     is_bot: bool,
+    ready: bool,
+    presence: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -168,8 +210,20 @@ struct LobbyView {
     rule_preset: String,
     bot_difficulty: String,
     status: String,
+    invite_code: String,
+    is_public: bool,
+    turn_seconds: i16,
+    spectator_count: i64,
     seats: Vec<SeatView>,
     requests: Vec<JoinRequestView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ActivityView {
+    id: i64,
+    kind: String,
+    message: String,
+    created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -201,6 +255,24 @@ enum ServerMessage {
         lobby_id: Uuid,
         model: GameViewModel,
         turn_seconds: u16,
+    },
+    SpectatorStarted {
+        lobby_id: Uuid,
+        model: GameViewModel,
+        turn_seconds: u16,
+    },
+    Activity {
+        lobby_id: Uuid,
+        event: ActivityView,
+    },
+    Feed {
+        lobby_id: Uuid,
+        events: Vec<ActivityView>,
+    },
+    RematchUpdate {
+        lobby_id: Uuid,
+        votes: i64,
+        needed: i64,
     },
     Ack {
         command_id: Uuid,
@@ -326,6 +398,25 @@ async fn online_socket(state: AppState, user: User, socket: WebSocket) {
     let (mut sink, mut source) = socket.split();
     let (sender, mut receiver) = mpsc::unbounded_channel();
     state.sockets.lock().await.insert(user.id, sender.clone());
+    let heartbeat_db = state.db.clone();
+    let heartbeat_user = user.id;
+    let heartbeat = tokio::spawn(async move {
+        loop {
+            let _ = sqlx::query(
+                "UPDATE lobby_members SET last_seen_at=CURRENT_TIMESTAMP WHERE user_id=$1",
+            )
+            .bind(heartbeat_user)
+            .execute(&heartbeat_db)
+            .await;
+            let _ = sqlx::query(
+                "UPDATE lobby_spectators SET last_seen_at=CURRENT_TIMESTAMP WHERE user_id=$1",
+            )
+            .bind(heartbeat_user)
+            .execute(&heartbeat_db)
+            .await;
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+    });
     let _ = sender.send(ServerMessage::Ready { user: user.clone() });
     let writer = tokio::spawn(async move {
         while let Some(message) = receiver.recv().await {
@@ -372,6 +463,7 @@ async fn online_socket(state: AppState, user: User, socket: WebSocket) {
         }
     }
     state.sockets.lock().await.remove(&user.id);
+    heartbeat.abort();
     writer.abort();
 }
 
@@ -458,6 +550,7 @@ async fn record_processed_command(state: &AppState, user_id: Uuid, command_id: U
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_online(
     state: &AppState,
     user: &User,
@@ -470,16 +563,99 @@ async fn handle_online(
             rule_preset,
             bot_difficulty,
             is_public,
-        } => create_lobby(state, user, name, rule_preset, bot_difficulty, is_public).await?,
+            turn_seconds,
+        } => {
+            create_lobby(
+                state,
+                user,
+                name,
+                rule_preset,
+                bot_difficulty,
+                is_public,
+                turn_seconds,
+            )
+            .await?;
+        }
         ClientMessage::RequestJoin { lobby_id } => request_join(state, user, lobby_id).await?,
+        ClientMessage::JoinByCode { invite_code } => {
+            let lobby_id: Uuid = sqlx::query_scalar(
+                "SELECT id FROM game_lobbies WHERE invite_code=upper($1) AND status='waiting'",
+            )
+            .bind(invite_code.trim())
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| ApiError::bad_request("Invite code is invalid or expired"))?;
+            request_join(state, user, lobby_id).await?;
+        }
+        ClientMessage::CancelJoin { lobby_id } => {
+            sqlx::query(
+                "DELETE FROM lobby_join_requests
+                 WHERE lobby_id=$1 AND user_id=$2 AND status='pending'",
+            )
+            .bind(lobby_id)
+            .bind(user.id)
+            .execute(&state.db)
+            .await?;
+            if let Some(host) =
+                sqlx::query_scalar("SELECT host_user_id FROM game_lobbies WHERE id=$1")
+                    .bind(lobby_id)
+                    .fetch_optional(&state.db)
+                    .await?
+            {
+                send_lobby_to(state, lobby_id, host).await?;
+            }
+            broadcast_lobbies(state).await;
+        }
         ClientMessage::RespondJoin { request_id, accept } => {
             respond_join(state, user, request_id, accept).await?;
         }
-        ClientMessage::LeaveLobby { lobby_id } => {
-            sqlx::query("DELETE FROM lobby_members WHERE lobby_id=$1 AND user_id=$2 AND EXISTS(SELECT 1 FROM game_lobbies WHERE id=$1 AND host_user_id<>$2 AND status='waiting')").bind(lobby_id).bind(user.id).execute(&state.db).await?;
-            send_lobby(state, lobby_id).await?;
-            broadcast_lobbies(state).await;
+        ClientMessage::LeaveLobby { lobby_id } => leave_lobby(state, user, lobby_id).await?,
+        ClientMessage::KickPlayer { lobby_id, user_id } => {
+            kick_player(state, user, lobby_id, user_id).await?;
         }
+        ClientMessage::SetReady { lobby_id, ready } => {
+            sqlx::query(
+                "UPDATE lobby_members SET ready=$3,last_seen_at=CURRENT_TIMESTAMP
+                 WHERE lobby_id=$1 AND user_id=$2
+                   AND EXISTS(SELECT 1 FROM game_lobbies WHERE id=$1 AND status='waiting')",
+            )
+            .bind(lobby_id)
+            .bind(user.id)
+            .bind(ready)
+            .execute(&state.db)
+            .await?;
+            send_lobby(state, lobby_id).await?;
+        }
+        ClientMessage::UpdateLobby {
+            lobby_id,
+            rule_preset,
+            bot_difficulty,
+            is_public,
+            turn_seconds,
+        } => {
+            update_lobby(
+                state,
+                user,
+                lobby_id,
+                &rule_preset,
+                &bot_difficulty,
+                is_public,
+                turn_seconds,
+            )
+            .await?;
+        }
+        ClientMessage::QuickMatch {
+            rule_preset,
+            bot_difficulty,
+        } => quick_match(state, user, &rule_preset, &bot_difficulty).await?,
+        ClientMessage::Spectate { lobby_id } => spectate(state, user, lobby_id).await?,
+        ClientMessage::Chat { lobby_id, body } => {
+            add_activity(state, user, lobby_id, "chat", &body).await?;
+        }
+        ClientMessage::React { lobby_id, emoji } => {
+            add_activity(state, user, lobby_id, "reaction", &emoji).await?;
+        }
+        ClientMessage::VoteRematch { lobby_id } => vote_rematch(state, user, lobby_id).await?,
         ClientMessage::StartGame { lobby_id } => start_game(state, user, lobby_id).await?,
         ClientMessage::Sync { lobby_id } => sync_game(state, user, lobby_id).await?,
         ClientMessage::Roll { lobby_id, revision } => {
@@ -501,9 +677,14 @@ async fn create_lobby(
     rule_preset: String,
     bot_difficulty: String,
     is_public: bool,
+    turn_seconds: u16,
 ) -> Result<(), ApiError> {
     validate_lobby_options(&rule_preset, &bot_difficulty)?;
+    if ![15, 30, 45, 60].contains(&turn_seconds) {
+        return Err(ApiError::bad_request("Invalid turn timer"));
+    }
     let id = Uuid::new_v4();
+    let invite_code = id.simple().to_string()[..8].to_ascii_uppercase();
     let name = if name.trim().is_empty() {
         format!("{}'s table", user.display_name)
     } else {
@@ -525,9 +706,9 @@ async fn create_lobby(
             "Leave or finish your current table before creating another",
         ));
     }
-    sqlx::query("INSERT INTO game_lobbies(id,host_user_id,name,rule_preset,bot_difficulty,is_public) VALUES($1,$2,$3,$4,$5,$6)")
-        .bind(id).bind(user.id).bind(name).bind(rule_preset).bind(bot_difficulty).bind(is_public).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO lobby_members(lobby_id,user_id,seat) VALUES($1,$2,0)")
+    sqlx::query("INSERT INTO game_lobbies(id,host_user_id,name,rule_preset,bot_difficulty,is_public,invite_code,turn_seconds) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+        .bind(id).bind(user.id).bind(name).bind(rule_preset).bind(bot_difficulty).bind(is_public).bind(invite_code).bind(i16::try_from(turn_seconds).unwrap_or(30)).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO lobby_members(lobby_id,user_id,seat,ready) VALUES($1,$2,0,TRUE)")
         .bind(id)
         .bind(user.id)
         .execute(&mut *tx)
@@ -659,12 +840,201 @@ async fn accept_joining_player(
     Ok(())
 }
 
+async fn leave_lobby(state: &AppState, user: &User, lobby_id: Uuid) -> Result<(), ApiError> {
+    let mut tx = state.db.begin().await?;
+    let lobby: Option<Uuid> = sqlx::query_scalar(
+        "SELECT host_user_id FROM game_lobbies
+         WHERE id=$1 AND status='waiting' FOR UPDATE",
+    )
+    .bind(lobby_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(host_id) = lobby else {
+        sqlx::query("DELETE FROM lobby_spectators WHERE lobby_id=$1 AND user_id=$2")
+            .bind(lobby_id)
+            .bind(user.id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        return Ok(());
+    };
+    sqlx::query("DELETE FROM lobby_members WHERE lobby_id=$1 AND user_id=$2")
+        .bind(lobby_id)
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    if host_id == user.id {
+        let successor: Option<Uuid> = sqlx::query_scalar(
+            "SELECT user_id FROM lobby_members WHERE lobby_id=$1 ORDER BY joined_at LIMIT 1",
+        )
+        .bind(lobby_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(successor) = successor {
+            sqlx::query(
+                "UPDATE game_lobbies SET host_user_id=$2,updated_at=CURRENT_TIMESTAMP WHERE id=$1",
+            )
+            .bind(lobby_id)
+            .bind(successor)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("UPDATE lobby_members SET ready=TRUE WHERE lobby_id=$1 AND user_id=$2")
+                .bind(lobby_id)
+                .bind(successor)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            sqlx::query("DELETE FROM game_lobbies WHERE id=$1")
+                .bind(lobby_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    tx.commit().await?;
+    if sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM game_lobbies WHERE id=$1)")
+        .bind(lobby_id)
+        .fetch_one(&state.db)
+        .await?
+    {
+        send_lobby(state, lobby_id).await?;
+    }
+    broadcast_lobbies(state).await;
+    Ok(())
+}
+
+async fn kick_player(
+    state: &AppState,
+    user: &User,
+    lobby_id: Uuid,
+    kicked_user_id: Uuid,
+) -> Result<(), ApiError> {
+    let removed = sqlx::query(
+        "DELETE FROM lobby_members
+         WHERE lobby_id=$1 AND user_id=$2 AND user_id<>$3
+           AND EXISTS(SELECT 1 FROM game_lobbies
+             WHERE id=$1 AND host_user_id=$3 AND status='waiting')",
+    )
+    .bind(lobby_id)
+    .bind(kicked_user_id)
+    .bind(user.id)
+    .execute(&state.db)
+    .await?;
+    if removed.rows_affected() == 0 {
+        return Err(ApiError::bad_request(
+            "Only the host can remove that player",
+        ));
+    }
+    send_to(
+        state,
+        kicked_user_id,
+        ServerMessage::JoinDecision {
+            lobby_id,
+            accepted: false,
+        },
+    )
+    .await;
+    send_lobby(state, lobby_id).await?;
+    broadcast_lobbies(state).await;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn update_lobby(
+    state: &AppState,
+    user: &User,
+    lobby_id: Uuid,
+    preset: &str,
+    difficulty: &str,
+    is_public: bool,
+    turn_seconds: u16,
+) -> Result<(), ApiError> {
+    validate_lobby_options(preset, difficulty)?;
+    if ![15, 30, 45, 60].contains(&turn_seconds) {
+        return Err(ApiError::bad_request("Invalid turn timer"));
+    }
+    let changed = sqlx::query(
+        "UPDATE game_lobbies
+         SET rule_preset=$3,bot_difficulty=$4,is_public=$5,turn_seconds=$6,
+             updated_at=CURRENT_TIMESTAMP
+         WHERE id=$1 AND host_user_id=$2 AND status='waiting'",
+    )
+    .bind(lobby_id)
+    .bind(user.id)
+    .bind(preset)
+    .bind(difficulty)
+    .bind(is_public)
+    .bind(i16::try_from(turn_seconds).unwrap_or(30))
+    .execute(&state.db)
+    .await?;
+    if changed.rows_affected() == 0 {
+        return Err(ApiError::bad_request(
+            "Only the host can change table settings",
+        ));
+    }
+    send_lobby(state, lobby_id).await?;
+    broadcast_lobbies(state).await;
+    Ok(())
+}
+
+async fn quick_match(
+    state: &AppState,
+    user: &User,
+    preset: &str,
+    difficulty: &str,
+) -> Result<(), ApiError> {
+    validate_lobby_options(preset, difficulty)?;
+    let mut tx = state.db.begin().await?;
+    let lobby_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT l.id FROM game_lobbies l
+         WHERE l.status='waiting' AND l.is_public AND l.rule_preset=$1
+           AND l.bot_difficulty=$2 AND l.host_user_id<>$3
+           AND (SELECT count(*) FROM lobby_members m WHERE m.lobby_id=l.id)<4
+         ORDER BY l.created_at FOR UPDATE SKIP LOCKED LIMIT 1",
+    )
+    .bind(preset)
+    .bind(difficulty)
+    .bind(user.id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(lobby_id) = lobby_id {
+        accept_joining_player(&mut tx, lobby_id, user.id).await?;
+        tx.commit().await?;
+        send_lobby(state, lobby_id).await?;
+        broadcast_lobbies(state).await;
+    } else {
+        tx.rollback().await?;
+        create_lobby(
+            state,
+            user,
+            "Quick Match".to_owned(),
+            preset.to_owned(),
+            difficulty.to_owned(),
+            true,
+            TURN_SECONDS,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 async fn start_game(state: &AppState, user: &User, lobby_id: Uuid) -> Result<(), ApiError> {
     let mut tx = state.db.begin().await?;
-    let lobby = sqlx::query("SELECT rule_preset,bot_difficulty FROM game_lobbies WHERE id=$1 AND host_user_id=$2 AND status='waiting' FOR UPDATE")
+    let lobby = sqlx::query("SELECT rule_preset,bot_difficulty,turn_seconds FROM game_lobbies WHERE id=$1 AND host_user_id=$2 AND status='waiting' FOR UPDATE")
         .bind(lobby_id).bind(user.id).fetch_optional(&mut *tx).await?.ok_or_else(|| ApiError::bad_request("Only the host can start this game"))?;
     let preset: String = lobby.get(0);
     let difficulty: String = lobby.get(1);
+    let turn_seconds = u16::try_from(lobby.get::<i16, _>(2)).unwrap_or(TURN_SECONDS);
+    let unready: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM lobby_members
+         WHERE lobby_id=$1 AND user_id<>$2 AND NOT ready",
+    )
+    .bind(lobby_id)
+    .bind(user.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if unready > 0 {
+        return Err(ApiError::conflict("Every human player must be ready"));
+    }
     let members = sqlx::query("SELECT m.seat,u.id,u.display_name FROM lobby_members m JOIN users u ON u.id=m.user_id WHERE m.lobby_id=$1 ORDER BY m.seat")
         .bind(lobby_id).fetch_all(&mut *tx).await?;
     let mut names: [Option<(Uuid, String)>; 4] = [None, None, None, None];
@@ -697,7 +1067,7 @@ async fn start_game(state: &AppState, user: &User, lobby_id: Uuid) -> Result<(),
         .map_err(|_| ApiError::internal("Could not create game"))?;
     let json =
         serde_json::to_value(&game).map_err(|_| ApiError::internal("Could not serialize game"))?;
-    sqlx::query("UPDATE game_lobbies SET status='playing',game_state=$2,turn_deadline=CURRENT_TIMESTAMP+($3::text||' seconds')::interval,updated_at=CURRENT_TIMESTAMP WHERE id=$1").bind(lobby_id).bind(json).bind(TURN_SECONDS.to_string()).execute(&mut *tx).await?;
+    sqlx::query("UPDATE game_lobbies SET status='playing',game_state=$2,turn_deadline=CURRENT_TIMESTAMP+($3::text||' seconds')::interval,updated_at=CURRENT_TIMESTAMP WHERE id=$1").bind(lobby_id).bind(json).bind(turn_seconds.to_string()).execute(&mut *tx).await?;
     if state.ably.is_some() {
         for (seat, member) in names.iter().enumerate() {
             let Some((user_id, _)) = member else {
@@ -711,7 +1081,7 @@ async fn start_game(state: &AppState, user: &User, lobby_id: Uuid) -> Result<(),
                     lobby_id,
                     player: player_id(u8::try_from(seat).unwrap_or(0)),
                     model: GameViewModel::from(&game),
-                    turn_seconds: TURN_SECONDS,
+                    turn_seconds,
                 },
             )
             .await?;
@@ -719,14 +1089,14 @@ async fn start_game(state: &AppState, user: &User, lobby_id: Uuid) -> Result<(),
     }
     tx.commit().await?;
     if state.ably.is_none() {
-        broadcast_game_started(state, lobby_id, &game).await?;
+        broadcast_game_started(state, lobby_id, &game, turn_seconds).await?;
     }
     broadcast_lobbies(state).await;
     Ok(())
 }
 
 async fn sync_game(state: &AppState, user: &User, lobby_id: Uuid) -> Result<(), ApiError> {
-    let row = sqlx::query("SELECT l.game_state,m.seat FROM game_lobbies l JOIN lobby_members m ON m.lobby_id=l.id WHERE l.id=$1 AND m.user_id=$2 AND l.status='playing'")
+    let row = sqlx::query("SELECT l.game_state,m.seat,l.turn_seconds FROM game_lobbies l JOIN lobby_members m ON m.lobby_id=l.id WHERE l.id=$1 AND m.user_id=$2 AND l.status='playing'")
         .bind(lobby_id).bind(user.id).fetch_optional(&state.db).await?.ok_or_else(|| ApiError::bad_request("Game not found"))?;
     let game: GameState = serde_json::from_value(row.get(0))
         .map_err(|_| ApiError::internal("Stored game is invalid"))?;
@@ -737,13 +1107,238 @@ async fn sync_game(state: &AppState, user: &User, lobby_id: Uuid) -> Result<(), 
             lobby_id,
             player: player_id(u8::try_from(row.get::<i16, _>(1)).unwrap_or(0)),
             model: GameViewModel::from(&game),
+            turn_seconds: u16::try_from(row.get::<i16, _>(2)).unwrap_or(TURN_SECONDS),
+        },
+    )
+    .await;
+    send_feed(state, lobby_id, user.id).await?;
+    Ok(())
+}
+
+async fn spectate(state: &AppState, user: &User, lobby_id: Uuid) -> Result<(), ApiError> {
+    let game_json: serde_json::Value = sqlx::query_scalar(
+        "SELECT game_state FROM game_lobbies
+         WHERE id=$1 AND status='playing' AND is_public",
+    )
+    .bind(lobby_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::bad_request("This match is not available to spectate"))?;
+    sqlx::query(
+        "INSERT INTO lobby_spectators(lobby_id,user_id) VALUES($1,$2)
+         ON CONFLICT(lobby_id,user_id)
+         DO UPDATE SET last_seen_at=CURRENT_TIMESTAMP",
+    )
+    .bind(lobby_id)
+    .bind(user.id)
+    .execute(&state.db)
+    .await?;
+    let game: GameState = serde_json::from_value(game_json)
+        .map_err(|_| ApiError::internal("Stored game is invalid"))?;
+    send_to(
+        state,
+        user.id,
+        ServerMessage::SpectatorStarted {
+            lobby_id,
+            model: GameViewModel::from(&game),
             turn_seconds: TURN_SECONDS,
         },
     )
     .await;
+    send_feed(state, lobby_id, user.id).await?;
     Ok(())
 }
 
+async fn add_activity(
+    state: &AppState,
+    user: &User,
+    lobby_id: Uuid,
+    kind: &str,
+    raw_message: &str,
+) -> Result<(), ApiError> {
+    enforce_rate_limit(state, &format!("activity:{}", user.id), 20).await?;
+    let allowed = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM lobby_members WHERE lobby_id=$1 AND user_id=$2)
+         OR EXISTS(SELECT 1 FROM lobby_spectators WHERE lobby_id=$1 AND user_id=$2)",
+    )
+    .bind(lobby_id)
+    .bind(user.id)
+    .fetch_one(&state.db)
+    .await?;
+    if !allowed {
+        return Err(ApiError::unauthorized("Join this match before posting"));
+    }
+    let message = if kind == "reaction" {
+        if !["👍", "👏", "😮", "😂", "🔥", "👑"].contains(&raw_message) {
+            return Err(ApiError::bad_request("Unsupported reaction"));
+        }
+        format!("{} reacted {raw_message}", user.display_name)
+    } else {
+        let body = raw_message.trim();
+        if body.is_empty() || body.chars().count() > 240 {
+            return Err(ApiError::bad_request(
+                "Chat messages must be 1–240 characters",
+            ));
+        }
+        let normalized = body.to_ascii_lowercase();
+        if [
+            "http://",
+            "https://",
+            "<script",
+            "discord.gg",
+            "fuck",
+            "bitch",
+            "nigger",
+        ]
+        .iter()
+        .any(|blocked| normalized.contains(blocked))
+        {
+            return Err(ApiError::bad_request(
+                "Links and unsafe content are not allowed",
+            ));
+        }
+        format!("{}: {body}", user.display_name)
+    };
+    let row = sqlx::query(
+        "INSERT INTO lobby_events(lobby_id,actor_user_id,kind,message)
+         VALUES($1,$2,$3,$4)
+         RETURNING id,kind,message,created_at::text",
+    )
+    .bind(lobby_id)
+    .bind(user.id)
+    .bind(kind)
+    .bind(message)
+    .fetch_one(&state.db)
+    .await?;
+    broadcast_activity(
+        state,
+        lobby_id,
+        ActivityView {
+            id: row.get(0),
+            kind: row.get(1),
+            message: row.get(2),
+            created_at: row.get(3),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+async fn send_feed(state: &AppState, lobby_id: Uuid, user_id: Uuid) -> Result<(), ApiError> {
+    let rows = sqlx::query(
+        "SELECT id,kind,message,created_at::text FROM lobby_events
+         WHERE lobby_id=$1 ORDER BY id DESC LIMIT 40",
+    )
+    .bind(lobby_id)
+    .fetch_all(&state.db)
+    .await?;
+    let mut events = rows
+        .into_iter()
+        .map(|row| ActivityView {
+            id: row.get(0),
+            kind: row.get(1),
+            message: row.get(2),
+            created_at: row.get(3),
+        })
+        .collect::<Vec<_>>();
+    events.reverse();
+    send_to(state, user_id, ServerMessage::Feed { lobby_id, events }).await;
+    Ok(())
+}
+
+async fn broadcast_activity(
+    state: &AppState,
+    lobby_id: Uuid,
+    event: ActivityView,
+) -> Result<(), ApiError> {
+    let users: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM lobby_members WHERE lobby_id=$1
+         UNION SELECT user_id FROM lobby_spectators WHERE lobby_id=$1",
+    )
+    .bind(lobby_id)
+    .fetch_all(&state.db)
+    .await?;
+    for user_id in users {
+        send_to(
+            state,
+            user_id,
+            ServerMessage::Activity {
+                lobby_id,
+                event: event.clone(),
+            },
+        )
+        .await;
+    }
+    Ok(())
+}
+
+async fn vote_rematch(state: &AppState, user: &User, lobby_id: Uuid) -> Result<(), ApiError> {
+    sqlx::query(
+        "INSERT INTO rematch_votes(lobby_id,user_id)
+         SELECT $1,$2 WHERE EXISTS(
+           SELECT 1 FROM lobby_members m JOIN game_lobbies l ON l.id=m.lobby_id
+           WHERE m.lobby_id=$1 AND m.user_id=$2 AND l.status='finished')
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(lobby_id)
+    .bind(user.id)
+    .execute(&state.db)
+    .await?;
+    let votes: i64 = sqlx::query_scalar("SELECT count(*) FROM rematch_votes WHERE lobby_id=$1")
+        .bind(lobby_id)
+        .fetch_one(&state.db)
+        .await?;
+    let needed: i64 = sqlx::query_scalar("SELECT count(*) FROM lobby_members WHERE lobby_id=$1")
+        .bind(lobby_id)
+        .fetch_one(&state.db)
+        .await?;
+    let users: Vec<Uuid> =
+        sqlx::query_scalar("SELECT user_id FROM lobby_members WHERE lobby_id=$1")
+            .bind(lobby_id)
+            .fetch_all(&state.db)
+            .await?;
+    for user_id in &users {
+        send_to(
+            state,
+            *user_id,
+            ServerMessage::RematchUpdate {
+                lobby_id,
+                votes,
+                needed,
+            },
+        )
+        .await;
+    }
+    if needed > 0 && votes >= needed {
+        sqlx::query(
+            "UPDATE game_lobbies SET status='waiting',game_state=NULL,turn_deadline=NULL,
+             updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status='finished'",
+        )
+        .bind(lobby_id)
+        .execute(&state.db)
+        .await?;
+        sqlx::query(
+            "UPDATE lobby_members m SET ready=(m.user_id=l.host_user_id)
+             FROM game_lobbies l WHERE m.lobby_id=$1 AND l.id=m.lobby_id",
+        )
+        .bind(lobby_id)
+        .execute(&state.db)
+        .await?;
+        sqlx::query("DELETE FROM rematch_votes WHERE lobby_id=$1")
+            .bind(lobby_id)
+            .execute(&state.db)
+            .await?;
+        sqlx::query("DELETE FROM lobby_spectators WHERE lobby_id=$1")
+            .bind(lobby_id)
+            .execute(&state.db)
+            .await?;
+        send_lobby(state, lobby_id).await?;
+        broadcast_lobbies(state).await;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
 async fn apply_action(
     state: &AppState,
     user: &User,
@@ -752,11 +1347,12 @@ async fn apply_action(
     token: Option<TokenId>,
 ) -> Result<(), ApiError> {
     let mut tx = state.db.begin().await?;
-    let row = sqlx::query("SELECT l.game_state,m.seat FROM game_lobbies l JOIN lobby_members m ON m.lobby_id=l.id WHERE l.id=$1 AND m.user_id=$2 AND l.status='playing' FOR UPDATE OF l")
+    let row = sqlx::query("SELECT l.game_state,m.seat,l.turn_seconds FROM game_lobbies l JOIN lobby_members m ON m.lobby_id=l.id WHERE l.id=$1 AND m.user_id=$2 AND l.status='playing' FOR UPDATE OF l")
         .bind(lobby_id).bind(user.id).fetch_optional(&mut *tx).await?.ok_or_else(|| ApiError::bad_request("Game not found"))?;
     let mut game: GameState = serde_json::from_value(row.get(0))
         .map_err(|_| ApiError::internal("Stored game is invalid"))?;
     let seat = usize::try_from(row.get::<i16, _>(1)).unwrap_or(4);
+    let turn_seconds = u16::try_from(row.get::<i16, _>(2)).unwrap_or(TURN_SECONDS);
     if game.revision() != revision || game.current_player_index() != seat {
         return Err(ApiError::conflict(
             "The game advanced; refreshing the board",
@@ -765,6 +1361,25 @@ async fn apply_action(
     let command = token.map_or_else(random_roll, GameCommand::Move);
     game.apply(command)
         .map_err(|error| ApiError::bad_request(&error.to_string()))?;
+    let activity_message = token.map_or_else(
+        || format!("{} rolled the dice", user.display_name),
+        |token| format!("{} moved token {}", user.display_name, token.index() + 1),
+    );
+    let activity_row = sqlx::query(
+        "INSERT INTO lobby_events(lobby_id,actor_user_id,kind,message)
+         VALUES($1,$2,'move',$3) RETURNING id,kind,message,created_at::text",
+    )
+    .bind(lobby_id)
+    .bind(user.id)
+    .bind(activity_message)
+    .fetch_one(&mut *tx)
+    .await?;
+    let activity = ActivityView {
+        id: activity_row.get(0),
+        kind: activity_row.get(1),
+        message: activity_row.get(2),
+        created_at: activity_row.get(3),
+    };
     run_bots(&mut game);
     let status = if game.status() == GameStatus::Finished {
         "finished"
@@ -772,7 +1387,7 @@ async fn apply_action(
         "playing"
     };
     sqlx::query("UPDATE game_lobbies SET game_state=$2,status=$3::lobby_status,turn_deadline=CASE WHEN $3='playing' THEN CURRENT_TIMESTAMP+($4::text||' seconds')::interval ELSE NULL END,updated_at=CURRENT_TIMESTAMP WHERE id=$1")
-        .bind(lobby_id).bind(serde_json::to_value(&game).map_err(|_| ApiError::internal("Could not save game"))?).bind(status).bind(TURN_SECONDS.to_string()).execute(&mut *tx).await?;
+        .bind(lobby_id).bind(serde_json::to_value(&game).map_err(|_| ApiError::internal("Could not save game"))?).bind(status).bind(turn_seconds.to_string()).execute(&mut *tx).await?;
     if game.status() == GameStatus::Finished {
         let member_rows =
             sqlx::query("SELECT seat,user_id FROM lobby_members WHERE lobby_id=$1 ORDER BY seat")
@@ -808,23 +1423,26 @@ async fn apply_action(
         .await?;
     }
     if state.ably.is_some() {
-        let users: Vec<Uuid> =
-            sqlx::query_scalar("SELECT user_id FROM lobby_members WHERE lobby_id=$1")
-                .bind(lobby_id)
-                .fetch_all(&mut *tx)
-                .await?;
+        let users: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT user_id FROM lobby_members WHERE lobby_id=$1
+             UNION SELECT user_id FROM lobby_spectators WHERE lobby_id=$1",
+        )
+        .bind(lobby_id)
+        .fetch_all(&mut *tx)
+        .await?;
         let message = ServerMessage::State {
             lobby_id,
             model: GameViewModel::from(&game),
-            turn_seconds: TURN_SECONDS,
+            turn_seconds,
         };
         for user_id in users {
             enqueue_outbox(&mut tx, &format!("ludo:user:{user_id}"), "event", &message).await?;
         }
     }
     tx.commit().await?;
+    broadcast_activity(state, lobby_id, activity).await?;
     if state.ably.is_none() {
-        broadcast_state(state, lobby_id, &game).await?;
+        broadcast_state(state, lobby_id, &game, turn_seconds).await?;
     }
     Ok(())
 }
@@ -865,6 +1483,7 @@ async fn broadcast_game_started(
     state: &AppState,
     lobby_id: Uuid,
     game: &GameState,
+    turn_seconds: u16,
 ) -> Result<(), ApiError> {
     let members = sqlx::query("SELECT user_id,seat FROM lobby_members WHERE lobby_id=$1")
         .bind(lobby_id)
@@ -878,7 +1497,7 @@ async fn broadcast_game_started(
                 lobby_id,
                 player: player_id(u8::try_from(row.get::<i16, _>(1)).unwrap_or(0)),
                 model: GameViewModel::from(game),
-                turn_seconds: TURN_SECONDS,
+                turn_seconds,
             },
         )
         .await;
@@ -890,12 +1509,15 @@ async fn broadcast_state(
     state: &AppState,
     lobby_id: Uuid,
     game: &GameState,
+    turn_seconds: u16,
 ) -> Result<(), ApiError> {
-    let users: Vec<Uuid> =
-        sqlx::query_scalar("SELECT user_id FROM lobby_members WHERE lobby_id=$1")
-            .bind(lobby_id)
-            .fetch_all(&state.db)
-            .await?;
+    let users: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM lobby_members WHERE lobby_id=$1
+         UNION SELECT user_id FROM lobby_spectators WHERE lobby_id=$1",
+    )
+    .bind(lobby_id)
+    .fetch_all(&state.db)
+    .await?;
     for id in users {
         send_to(
             state,
@@ -903,7 +1525,7 @@ async fn broadcast_state(
             ServerMessage::State {
                 lobby_id,
                 model: GameViewModel::from(game),
-                turn_seconds: TURN_SECONDS,
+                turn_seconds,
             },
         )
         .await;
@@ -913,7 +1535,7 @@ async fn broadcast_state(
 
 async fn send_lobbies(state: &AppState, user: &User) {
     let result = async {
-        let rows = sqlx::query("SELECT l.id,l.name,u.display_name,(SELECT count(*) FROM lobby_members m WHERE m.lobby_id=l.id),l.rule_preset,l.bot_difficulty,l.status::text,l.host_user_id=$1,EXISTS(SELECT 1 FROM lobby_join_requests r WHERE r.lobby_id=l.id AND r.user_id=$1 AND r.status='pending') FROM game_lobbies l JOIN users u ON u.id=l.host_user_id WHERE (l.is_public OR l.host_user_id=$1 OR EXISTS(SELECT 1 FROM lobby_members m WHERE m.lobby_id=l.id AND m.user_id=$1)) AND l.status='waiting' ORDER BY l.updated_at DESC LIMIT 100")
+        let rows = sqlx::query("SELECT l.id,l.name,u.display_name,(SELECT count(*) FROM lobby_members m WHERE m.lobby_id=l.id),l.rule_preset,l.bot_difficulty,l.status::text,l.host_user_id=$1,EXISTS(SELECT 1 FROM lobby_join_requests r WHERE r.lobby_id=l.id AND r.user_id=$1 AND r.status='pending') FROM game_lobbies l JOIN users u ON u.id=l.host_user_id WHERE (l.is_public OR l.host_user_id=$1 OR EXISTS(SELECT 1 FROM lobby_members m WHERE m.lobby_id=l.id AND m.user_id=$1)) AND l.status IN ('waiting','playing') ORDER BY l.updated_at DESC LIMIT 100")
             .bind(user.id).fetch_all(&state.db).await?;
         Ok::<_, sqlx::Error>(rows.into_iter().map(|r| LobbySummary { id:r.get(0),name:r.get(1),host_name:r.get(2),human_players:r.get(3),rule_preset:r.get(4),bot_difficulty:r.get(5),status:r.get(6),is_host:r.get(7),requested:r.get(8) }).collect())
     }.await;
@@ -1005,14 +1627,16 @@ async fn send_lobby(state: &AppState, lobby_id: Uuid) -> Result<(), ApiError> {
 }
 
 async fn send_lobby_to(state: &AppState, lobby_id: Uuid, user_id: Uuid) -> Result<(), ApiError> {
-    let row = sqlx::query("SELECT id,name,host_user_id,rule_preset,bot_difficulty,status::text FROM game_lobbies WHERE id=$1").bind(lobby_id).fetch_optional(&state.db).await?.ok_or_else(|| ApiError::bad_request("Lobby not found"))?;
-    let members = sqlx::query("SELECT m.seat,u.id,u.display_name FROM lobby_members m JOIN users u ON u.id=m.user_id WHERE m.lobby_id=$1 ORDER BY m.seat").bind(lobby_id).fetch_all(&state.db).await?;
+    let row = sqlx::query("SELECT id,name,host_user_id,rule_preset,bot_difficulty,status::text,invite_code,is_public,turn_seconds,(SELECT count(*) FROM lobby_spectators WHERE lobby_id=$1) FROM game_lobbies WHERE id=$1").bind(lobby_id).fetch_optional(&state.db).await?.ok_or_else(|| ApiError::bad_request("Lobby not found"))?;
+    let members = sqlx::query("SELECT m.seat,u.id,u.display_name,m.ready,CASE WHEN m.last_seen_at>CURRENT_TIMESTAMP-INTERVAL '20 seconds' THEN 'online' WHEN m.last_seen_at>CURRENT_TIMESTAMP-INTERVAL '90 seconds' THEN 'reconnecting' ELSE 'offline' END FROM lobby_members m JOIN users u ON u.id=m.user_id WHERE m.lobby_id=$1 ORDER BY m.seat").bind(lobby_id).fetch_all(&state.db).await?;
     let mut seats = (0_i16..4)
         .map(|seat| SeatView {
             seat,
             user_id: None,
             name: format!("Royal Bot {}", seat + 1),
             is_bot: true,
+            ready: true,
+            presence: "bot".to_owned(),
         })
         .collect::<Vec<_>>();
     for member in members {
@@ -1022,6 +1646,8 @@ async fn send_lobby_to(state: &AppState, lobby_id: Uuid, user_id: Uuid) -> Resul
             user_id: Some(member.get(1)),
             name: member.get(2),
             is_bot: false,
+            ready: member.get(3),
+            presence: member.get(4),
         };
     }
     let requests = if row.get::<Uuid, _>(2) == user_id {
@@ -1040,6 +1666,10 @@ async fn send_lobby_to(state: &AppState, lobby_id: Uuid, user_id: Uuid) -> Resul
                 rule_preset: row.get(3),
                 bot_difficulty: row.get(4),
                 status: row.get(5),
+                invite_code: row.get(6),
+                is_public: row.get(7),
+                turn_seconds: row.get(8),
+                spectator_count: row.get(9),
                 seats,
                 requests,
             },
@@ -1190,18 +1820,77 @@ async fn send_deployment_alert(state: &AppState, title: &str, detail: &str) {
 }
 
 async fn run_match_supervisor(state: AppState) {
+    let mut lifecycle_tick = 0_u8;
     loop {
         if let Err(error) = advance_expired_turn(&state).await {
             tracing::error!(status=%error.0, message=%error.1, "turn supervisor failed");
+        }
+        lifecycle_tick = lifecycle_tick.wrapping_add(1);
+        if lifecycle_tick.is_multiple_of(15) {
+            let waiting: Vec<Uuid> =
+                sqlx::query_scalar("SELECT id FROM game_lobbies WHERE status='waiting'")
+                    .fetch_all(&state.db)
+                    .await
+                    .unwrap_or_default();
+            for lobby_id in waiting {
+                let _ = send_lobby(&state, lobby_id).await;
+            }
+            if let Err(error) = maintain_lobby_lifecycle(&state).await {
+                tracing::error!(status=%error.0, message=%error.1, "lobby lifecycle maintenance failed");
+            }
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
+async fn maintain_lobby_lifecycle(state: &AppState) -> Result<(), ApiError> {
+    sqlx::query(
+        "WITH replacements AS (
+           SELECT l.id,(
+             SELECT m.user_id FROM lobby_members m
+             WHERE m.lobby_id=l.id AND m.user_id<>l.host_user_id
+               AND m.last_seen_at>CURRENT_TIMESTAMP-INTERVAL '90 seconds'
+             ORDER BY m.joined_at LIMIT 1
+           ) AS successor
+           FROM game_lobbies l JOIN lobby_members host
+             ON host.lobby_id=l.id AND host.user_id=l.host_user_id
+           WHERE l.status='waiting'
+             AND host.last_seen_at<CURRENT_TIMESTAMP-INTERVAL '90 seconds'
+         )
+         UPDATE game_lobbies l SET host_user_id=r.successor,updated_at=CURRENT_TIMESTAMP
+         FROM replacements r WHERE l.id=r.id AND r.successor IS NOT NULL",
+    )
+    .execute(&state.db)
+    .await?;
+    sqlx::query(
+        "UPDATE lobby_members m SET ready=TRUE FROM game_lobbies l
+         WHERE l.id=m.lobby_id AND l.host_user_id=m.user_id AND l.status='waiting'",
+    )
+    .execute(&state.db)
+    .await?;
+    let removed = sqlx::query(
+        "DELETE FROM game_lobbies l WHERE l.status='waiting'
+         AND l.updated_at<CURRENT_TIMESTAMP-INTERVAL '2 hours'
+         AND NOT EXISTS(
+           SELECT 1 FROM lobby_members m WHERE m.lobby_id=l.id
+             AND m.last_seen_at>CURRENT_TIMESTAMP-INTERVAL '90 seconds')",
+    )
+    .execute(&state.db)
+    .await?;
+    if removed.rows_affected() > 0 {
+        tracing::info!(
+            count = removed.rows_affected(),
+            "closed stale waiting rooms"
+        );
+        broadcast_lobbies(state).await;
+    }
+    Ok(())
+}
+
 async fn advance_expired_turn(state: &AppState) -> Result<(), ApiError> {
     let mut tx = state.db.begin().await?;
     let row = sqlx::query(
-        "SELECT id,game_state FROM game_lobbies
+        "SELECT id,game_state,turn_seconds FROM game_lobbies
          WHERE status='playing' AND turn_deadline<=CURRENT_TIMESTAMP
          ORDER BY turn_deadline
          FOR UPDATE SKIP LOCKED LIMIT 1",
@@ -1213,8 +1902,10 @@ async fn advance_expired_turn(state: &AppState) -> Result<(), ApiError> {
         return Ok(());
     };
     let lobby_id: Uuid = row.get(0);
+    let turn_seconds = u16::try_from(row.get::<i16, _>(2)).unwrap_or(TURN_SECONDS);
     let mut game: GameState = serde_json::from_value(row.get(1))
         .map_err(|_| ApiError::internal("Stored game is invalid"))?;
+    let timed_out_player = game.current().player.name.clone();
     let command = match game.phase() {
         TurnPhase::AwaitingRoll => random_roll(),
         TurnPhase::AwaitingMove { legal_tokens, .. } => {
@@ -1231,6 +1922,20 @@ async fn advance_expired_turn(state: &AppState) -> Result<(), ApiError> {
     game.apply(command)
         .map_err(|error| ApiError::bad_request(&error.to_string()))?;
     run_bots(&mut game);
+    let activity_row = sqlx::query(
+        "INSERT INTO lobby_events(lobby_id,kind,message)
+         VALUES($1,'timeout',$2) RETURNING id,kind,message,created_at::text",
+    )
+    .bind(lobby_id)
+    .bind(format!("AI advanced {timed_out_player}'s timed-out turn"))
+    .fetch_one(&mut *tx)
+    .await?;
+    let activity = ActivityView {
+        id: activity_row.get(0),
+        kind: activity_row.get(1),
+        message: activity_row.get(2),
+        created_at: activity_row.get(3),
+    };
     let status = if game.status() == GameStatus::Finished {
         "finished"
     } else {
@@ -1247,28 +1952,31 @@ async fn advance_expired_turn(state: &AppState) -> Result<(), ApiError> {
     .bind(lobby_id)
     .bind(serde_json::to_value(&game).map_err(|_| ApiError::internal("Could not save timed turn"))?)
     .bind(status)
-    .bind(TURN_SECONDS.to_string())
+    .bind(turn_seconds.to_string())
     .execute(&mut *tx)
     .await?;
     if state.ably.is_some() {
-        let users: Vec<Uuid> =
-            sqlx::query_scalar("SELECT user_id FROM lobby_members WHERE lobby_id=$1")
-                .bind(lobby_id)
-                .fetch_all(&mut *tx)
-                .await?;
+        let users: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT user_id FROM lobby_members WHERE lobby_id=$1
+             UNION SELECT user_id FROM lobby_spectators WHERE lobby_id=$1",
+        )
+        .bind(lobby_id)
+        .fetch_all(&mut *tx)
+        .await?;
         let message = ServerMessage::State {
             lobby_id,
             model: GameViewModel::from(&game),
-            turn_seconds: TURN_SECONDS,
+            turn_seconds,
         };
         for user_id in users {
             enqueue_outbox(&mut tx, &format!("ludo:user:{user_id}"), "event", &message).await?;
         }
     }
     tx.commit().await?;
+    broadcast_activity(state, lobby_id, activity).await?;
     tracing::info!(%lobby_id, "advanced expired player turn with temporary AI");
     if state.ably.is_none() {
-        broadcast_state(state, lobby_id, &game).await?;
+        broadcast_state(state, lobby_id, &game, turn_seconds).await?;
     }
     Ok(())
 }

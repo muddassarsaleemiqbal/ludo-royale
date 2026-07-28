@@ -35,6 +35,8 @@ test("two players can join, start, act, and reconnect", async ({ browser }) => {
   await expect(host.getByText(`Guest-${suffix}`)).toBeVisible();
   await host.getByRole("button", { name: "Accept" }).click();
   await expect(guest.getByText("Your seat was accepted.")).toBeVisible();
+  await guest.getByRole("button", { name: "I'm ready" }).click();
+  await expect(guest.getByRole("button", { name: "Not ready" })).toBeVisible();
   await host.getByRole("button", { name: "Start with this lineup" }).click();
   await expect(host.getByRole("button", { name: "Roll dice" })).toBeVisible();
 
@@ -42,6 +44,7 @@ test("two players can join, start, act, and reconnect", async ({ browser }) => {
   await expect(host.locator(".turn-banner")).toContainText("Your turn");
   await host.getByRole("button", { name: "Roll dice" }).click();
   await expect(host.getByText("Match status")).toBeVisible();
+  await expect(host.locator(".event-feed")).toContainText("rolled the dice");
 
   await hostContext.close();
   await guestContext.close();

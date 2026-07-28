@@ -12,9 +12,14 @@ export type LobbySummary = {
 export type Lobby = {
   id: string; name: string; host_user_id: string; rule_preset: string;
   bot_difficulty: string; status: string;
-  seats: { seat: number; user_id: string | null; name: string; is_bot: boolean }[];
+  invite_code: string; is_public: boolean; turn_seconds: number; spectator_count: number;
+  seats: {
+    seat: number; user_id: string | null; name: string; is_bot: boolean;
+    ready: boolean; presence: "online" | "reconnecting" | "offline" | "bot";
+  }[];
   requests: { id: string; user_id: string; display_name: string }[];
 };
+export type Activity = { id: number; kind: string; message: string; created_at: string };
 type Snapshot = {
   user: User | null; model: GameViewModel | null; lobbyId: string | null;
   player: number | null; connected: boolean; realtimeConnected: boolean;
@@ -24,6 +29,9 @@ type Snapshot = {
   rulePreset: string | null;
   botDifficulty: string | null;
   turnDeadline: number | null;
+  events: Activity[];
+  spectating: boolean;
+  rematchVotes: { votes: number; needed: number } | null;
 };
 type ServerMessage =
   | { type: "ready"; user: User }
@@ -33,6 +41,10 @@ type ServerMessage =
   | { type: "join_decision"; lobby_id: string; accepted: boolean }
   | { type: "game_started"; lobby_id: string; player: number; model: GameViewModel; turn_seconds: number }
   | { type: "state"; lobby_id: string; model: GameViewModel; turn_seconds: number }
+  | { type: "spectator_started"; lobby_id: string; model: GameViewModel; turn_seconds: number }
+  | { type: "activity"; lobby_id: string; event: Activity }
+  | { type: "feed"; lobby_id: string; events: Activity[] }
+  | { type: "rematch_update"; lobby_id: string; votes: number; needed: number }
   | { type: "ack"; command_id: string }
   | {
       type: "error"; command_id: string | null; code: string;
@@ -43,6 +55,7 @@ const api = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/,
   ?? "http://localhost:8080";
 const tokenKey = "ludo-online-token";
 const lobbyKey = "ludo-online-lobby";
+const spectatorKey = "ludo-online-spectator";
 
 class OnlineStore {
   private listeners = new Set<() => void>();
@@ -56,7 +69,8 @@ class OnlineStore {
     user: null, model: null, lobbyId: localStorage.getItem(lobbyKey), player: null,
     connected: false, realtimeConnected: false, lobbies: [], lobby: null,
     error: null, pending: null
-    , toast: null, rulePreset: null, botDifficulty: null, turnDeadline: null
+    , toast: null, rulePreset: null, botDifficulty: null, turnDeadline: null,
+    events: [], spectating: localStorage.getItem(spectatorKey) === "true", rematchVotes: null
   };
 
   subscribe = (listener: () => void) => {
@@ -113,11 +127,20 @@ class OnlineStore {
   clearError() { this.set({ error: null }); }
   clearToast() { this.set({ toast: null }); }
   listLobbies() { this.send({ type: "list_lobbies" }); }
-  createLobby(options: { name: string; rule_preset: string; bot_difficulty: string }) {
-    this.command("create", { type: "create_lobby", ...options, is_public: true });
+  createLobby(options: {
+    name: string; rule_preset: string; bot_difficulty: string; is_public: boolean;
+    turn_seconds: number
+  }) {
+    this.command("create", { type: "create_lobby", ...options });
   }
   requestJoin(lobbyId: string) {
     this.command(`join:${lobbyId}`, { type: "request_join", lobby_id: lobbyId });
+  }
+  joinByCode(inviteCode: string) {
+    this.command("invite", { type: "join_by_code", invite_code: inviteCode });
+  }
+  cancelJoin(lobbyId: string) {
+    this.command(`cancel:${lobbyId}`, { type: "cancel_join", lobby_id: lobbyId });
   }
   respondJoin(requestId: string, accept: boolean) {
     this.command(`request:${requestId}`, {
@@ -133,9 +156,59 @@ class OnlineStore {
     if (this.snapshot.lobby)
       this.command("start", { type: "start_game", lobby_id: this.snapshot.lobby.id });
   }
+  setReady(ready: boolean) {
+    if (this.snapshot.lobby)
+      this.command("ready", { type: "set_ready", lobby_id: this.snapshot.lobby.id, ready });
+  }
+  kickPlayer(userId: string) {
+    if (this.snapshot.lobby)
+      this.command(`kick:${userId}`, {
+        type: "kick_player", lobby_id: this.snapshot.lobby.id, user_id: userId
+      });
+  }
+  updateLobby(options: {
+    rule_preset: string; bot_difficulty: string; is_public: boolean; turn_seconds: number
+  }) {
+    if (this.snapshot.lobby)
+      this.command("settings", {
+        type: "update_lobby", lobby_id: this.snapshot.lobby.id, ...options
+      });
+  }
+  quickMatch(rulePreset: string, botDifficulty: string) {
+    this.command("quick", {
+      type: "quick_match", rule_preset: rulePreset, bot_difficulty: botDifficulty
+    });
+  }
+  spectate(lobbyId: string) {
+    this.command(`spectate:${lobbyId}`, { type: "spectate", lobby_id: lobbyId });
+  }
+  chat(body: string) {
+    if (this.snapshot.lobbyId)
+      this.send({ type: "chat", lobby_id: this.snapshot.lobbyId, body });
+  }
+  react(emoji: string) {
+    if (this.snapshot.lobbyId)
+      this.send({ type: "react", lobby_id: this.snapshot.lobbyId, emoji });
+  }
+  voteRematch() {
+    if (this.snapshot.lobbyId)
+      this.command("rematch", { type: "vote_rematch", lobby_id: this.snapshot.lobbyId });
+  }
+  async copyInvite() {
+    const code = this.snapshot.lobby?.invite_code;
+    if (!code) return;
+    const url = new URL(location.href);
+    url.searchParams.set("invite", code);
+    await navigator.clipboard.writeText(url.toString());
+    this.set({ toast: "Invite link copied." });
+  }
   showLocal() {
     localStorage.removeItem(lobbyKey);
-    this.set({ model: null, lobbyId: null, player: null, lobby: null, error: null });
+    localStorage.removeItem(spectatorKey);
+    this.set({
+      model: null, lobbyId: null, player: null, lobby: null, error: null,
+      spectating: false, events: [], rematchVotes: null
+    });
   }
   roll() {
     if (this.snapshot.lobbyId && this.snapshot.model)
@@ -177,7 +250,17 @@ class OnlineStore {
       this.set({ connected: true, error: null });
       this.connectAbly();
       if (this.snapshot.lobbyId)
-        this.send({ type: "sync", lobby_id: this.snapshot.lobbyId });
+        this.send({
+          type: this.snapshot.spectating ? "spectate" : "sync",
+          lobby_id: this.snapshot.lobbyId
+        });
+      const invite = new URL(location.href).searchParams.get("invite");
+      if (invite) {
+        this.joinByCode(invite);
+        const clean = new URL(location.href);
+        clean.searchParams.delete("invite");
+        history.replaceState(null, "", clean);
+      }
     };
     this.socket.onclose = () => {
       this.socket = null;
@@ -246,7 +329,15 @@ class OnlineStore {
       return;
     }
     if (value.type === "lobby") {
-      this.set({ lobby: value.lobby, pending: null, error: null });
+      if (this.snapshot.model?.winner !== null && this.snapshot.model?.winner !== undefined) {
+        localStorage.removeItem(lobbyKey);
+        this.set({
+          lobby: value.lobby, model: null, lobbyId: null, player: null,
+          pending: null, error: null, rematchVotes: null
+        });
+      } else {
+        this.set({ lobby: value.lobby, pending: null, error: null });
+      }
       return;
     }
     if (value.type === "join_requested") {
@@ -263,12 +354,14 @@ class OnlineStore {
     }
     if (value.type === "game_started") {
       localStorage.setItem(lobbyKey, value.lobby_id);
+      localStorage.removeItem(spectatorKey);
       this.set({
         lobby: null, lobbyId: value.lobby_id, player: value.player,
         model: value.model, pending: null, error: null,
         rulePreset: this.snapshot.lobby?.rule_preset ?? this.snapshot.rulePreset,
         botDifficulty: this.snapshot.lobby?.bot_difficulty ?? this.snapshot.botDifficulty,
-        turnDeadline: Date.now() + value.turn_seconds * 1000
+        turnDeadline: Date.now() + value.turn_seconds * 1000,
+        spectating: false, events: []
       });
       return;
     }
@@ -279,6 +372,29 @@ class OnlineStore {
         model: value.model, pending: null, error: null,
         turnDeadline: Date.now() + value.turn_seconds * 1000
       });
+      return;
+    }
+    if (value.type === "spectator_started") {
+      localStorage.setItem(lobbyKey, value.lobby_id);
+      localStorage.setItem(spectatorKey, "true");
+      this.set({
+        lobby: null, lobbyId: value.lobby_id, player: null, model: value.model,
+        spectating: true, events: [], pending: null, error: null,
+        turnDeadline: Date.now() + value.turn_seconds * 1000
+      });
+      return;
+    }
+    if (value.type === "feed") {
+      this.set({ events: value.events });
+      return;
+    }
+    if (value.type === "activity") {
+      if (value.lobby_id === this.snapshot.lobbyId)
+        this.set({ events: [...this.snapshot.events.slice(-39), value.event] });
+      return;
+    }
+    if (value.type === "rematch_update") {
+      this.set({ rematchVotes: { votes: value.votes, needed: value.needed } });
       return;
     }
     if (value.command_id) this.commands.delete(value.command_id);
@@ -316,10 +432,12 @@ class OnlineStore {
     this.token = null;
     localStorage.removeItem(tokenKey);
     localStorage.removeItem(lobbyKey);
+    localStorage.removeItem(spectatorKey);
     this.snapshot = {
       user: null, model: null, lobbyId: null, player: null, connected: false,
       realtimeConnected: false, lobbies: [], lobby: null, error: null, pending: null
-      , toast: null, rulePreset: null, botDifficulty: null, turnDeadline: null
+      , toast: null, rulePreset: null, botDifficulty: null, turnDeadline: null,
+      events: [], spectating: false, rematchVotes: null
     };
     this.emit();
   }
