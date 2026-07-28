@@ -39,13 +39,21 @@ cargo run -p ludo-simulation --release -- 10000
 ## Online server
 
 Online play requires an account. The Rust server owns dice rolls, validates
-every action against an exact revision, and broadcasts the canonical state to
-both browser and Tauri clients.
+every action against an exact revision, persists canonical state in PostgreSQL,
+and publishes realtime updates through Ably. Clients receive short-lived,
+read-only Ably JWTs scoped to their own private event channel; the Ably API key
+never reaches the browser.
 
 ```sh
 DATABASE_URL=postgresql://postgres:password@localhost:5432/ludo \
+ABLY_API_KEY=your-app-id.your-key-id:your-key-secret \
   cargo run -p ludo-server
 ```
+
+Create a free Ably app, copy a server API key from **API Keys**, and place it
+in `ABLY_API_KEY`. The key must have publish capability. The existing Axum
+WebSocket remains available as a local fallback and carries player commands;
+Ably provides scalable cross-instance event delivery.
 
 For local development, the client defaults to `http://localhost:8080`. For
 production, deploy the `ludo-server` Rust binary with a PostgreSQL

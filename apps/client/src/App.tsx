@@ -1,8 +1,15 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Bot,
+  Check,
+  ChevronRight,
+  Clock3,
+  Crown,
   Gamepad2,
   Globe2,
+  LockKeyhole,
+  Plus,
+  RefreshCw,
   Settings,
   Shield,
   Sparkles,
@@ -67,18 +74,92 @@ function OnlineDialog() {
   }
   return (
     <DialogContent>
-      <DialogTitle>Online play</DialogTitle>
-      <DialogDescription>Signed in as {online.user.display_name}</DialogDescription>
+      <DialogTitle>Your online profile</DialogTitle>
+      <DialogDescription>Signed in as {online.user.display_name}. Your active games reconnect automatically.</DialogDescription>
       <div className="online-lobby">
-        {online.model ? <p>Your match is ready. Close this window to play.</p>
-          : online.queued ? <p>Looking for another player…</p>
-            : <p>Play a secure, server-authoritative two-player match.</p>}
-        {!online.model && (online.queued
-          ? <Button variant="secondary" onClick={() => onlineStore.leaveQueue()}>Cancel search</Button>
-          : <Button disabled={!online.connected} onClick={() => onlineStore.findMatch()}>Find match</Button>)}
+        <p>{online.connected ? "Connected to the royal tables." : "Reconnecting…"}</p>
         <Button variant="ghost" onClick={() => onlineStore.logout()}>Log out</Button>
       </div>
     </DialogContent>
+  );
+}
+
+const presets = [
+  { id: "classic", name: "Classic", detail: "Safe stars, blockades and bonus turns", time: "35–50 min" },
+  { id: "quick", name: "Quick play", detail: "Faster routes and forgiving home rolls", time: "15–25 min" },
+  { id: "tournament", name: "Tournament", detail: "Rank every player with competitive rules", time: "45–60 min" }
+];
+
+function SetupScreen({ onLocal }: { onLocal: () => void }) {
+  const online = useOnlineStore();
+  const [mode, setMode] = useState<"local" | "online">("local");
+  const [preset, setPreset] = useState("classic");
+  const [difficulty, setDifficulty] = useState("medium");
+  const [tableName, setTableName] = useState("");
+  const [privateGame, setPrivateGame] = useState(false);
+
+  return (
+    <main className="setup-shell">
+      <div className="setup-orb orb-a" /><div className="setup-orb orb-b" />
+      <header className="setup-header">
+        <div className="brand"><div className="brand-mark small"><span>♟</span></div><div><strong>Ludo Royale</strong><span>Choose your table</span></div></div>
+        <div className="setup-profile">
+          {online.user ? <><span className={online.connected ? "online-dot" : ""} />{online.user.display_name}</> : <Dialog><DialogTrigger asChild><Button variant="secondary">Sign in</Button></DialogTrigger><OnlineDialog /></Dialog>}
+        </div>
+      </header>
+
+      <section className="setup-content">
+        <div className="setup-intro">
+          <span className="eyebrow"><Crown /> The royal board awaits</span>
+          <h1>Set the rules.<br /><em>Claim the crown.</em></h1>
+          <p>Play your way with three clever rivals, or open a table and let friends take their seats.</p>
+        </div>
+
+        <div className="setup-card">
+          <div className="setup-tabs">
+            <button className={mode === "local" ? "active" : ""} onClick={() => setMode("local")}><Gamepad2 /> Solo game</button>
+            <button className={mode === "online" ? "active" : ""} onClick={() => setMode("online")}><Globe2 /> Online tables</button>
+          </div>
+
+          {mode === "local" ? <>
+            <div className="section-label"><span>1</span><div><strong>Choose a ruleset</strong><small>You can change this before every match</small></div></div>
+            <div className="preset-grid">
+              {presets.map((item) => <button key={item.id} className={preset === item.id ? "active" : ""} onClick={() => setPreset(item.id)}>
+                <span className="preset-check">{preset === item.id && <Check />}</span><strong>{item.name}</strong><small>{item.detail}</small><em><Clock3 /> {item.time}</em>
+              </button>)}
+            </div>
+            <div className="option-row">
+              <div><strong>AI difficulty</strong><small>Applies to all three opponents</small></div>
+              <div className="segmented">{["easy","medium","hard"].map(level => <button key={level} className={difficulty === level ? "active" : ""} onClick={() => setDifficulty(level)}>{level}</button>)}</div>
+            </div>
+            <Button size="lg" className="setup-primary" onClick={onLocal}>Start solo game <ChevronRight /></Button>
+          </> : !online.user ? <div className="signin-prompt">
+            <LockKeyhole /><h2>Sign in to join the tables</h2><p>An account keeps games fair and lets you reconnect on any device.</p>
+            <Dialog><DialogTrigger asChild><Button>Sign in or create account</Button></DialogTrigger><OnlineDialog /></Dialog>
+          </div> : online.lobby ? <div className="lobby-room">
+            <div className="lobby-title"><div><span>Waiting room</span><h2>{online.lobby.name}</h2></div><small>{online.lobby.rule_preset} · {online.lobby.bot_difficulty} AI</small></div>
+            <div className="seat-list">{online.lobby.seats.map((seat, index) => <div className={seat.is_bot ? "bot-seat" : "human-seat"} key={seat.seat}><span>{index + 1}</span><div><strong>{seat.name}</strong><small>{seat.is_bot ? "AI fills this seat" : "Ready to play"}</small></div>{index === 0 && <Crown />}</div>)}</div>
+            {online.lobby.host_user_id === online.user.id && online.lobby.requests.length > 0 && <div className="request-list"><strong>Join requests</strong>{online.lobby.requests.map(request => <div key={request.id}><span>{request.display_name}</span><Button size="sm" onClick={() => onlineStore.respondJoin(request.id, true)}>Accept</Button><Button size="sm" variant="ghost" onClick={() => onlineStore.respondJoin(request.id, false)}>Decline</Button></div>)}</div>}
+            <div className="lobby-actions">{online.lobby.host_user_id === online.user.id ? <Button size="lg" onClick={() => onlineStore.startGame()}>Start with this lineup</Button> : <Button variant="secondary" onClick={() => onlineStore.leaveLobby()}>Leave table</Button>}</div>
+          </div> : <div className="table-browser">
+            <div className="browser-heading"><div><strong>Open tables</strong><small>Ask the host for a seat</small></div><Button size="icon" variant="ghost" onClick={() => onlineStore.listLobbies()} aria-label="Refresh tables"><RefreshCw /></Button></div>
+            <div className="table-list">{online.lobbies.length ? online.lobbies.map(lobby => <div className="table-row" key={lobby.id}>
+              <div className="table-icon"><Crown /></div><div><strong>{lobby.name}</strong><small>Hosted by {lobby.host_name} · {lobby.rule_preset}</small></div>
+              <span>{lobby.human_players}/4</span>
+              {lobby.is_host ? <Button size="sm" onClick={() => onlineStore.requestJoin(lobby.id)} disabled>Hosting</Button> : <Button size="sm" variant="secondary" disabled={lobby.requested} onClick={() => onlineStore.requestJoin(lobby.id)}>{lobby.requested ? "Requested" : "Request seat"}</Button>}
+            </div>) : <div className="empty-tables"><Globe2 /><strong>No open tables yet</strong><span>Be the first host online.</span></div>}</div>
+            <div className="create-table">
+              <div className="section-label"><span><Plus /></span><div><strong>Host a new table</strong><small>Three AI players fill empty seats</small></div></div>
+              <input value={tableName} onChange={e => setTableName(e.target.value)} placeholder={`${online.user.display_name}'s table`} maxLength={40} />
+              <div className="create-options"><select value={preset} onChange={e => setPreset(e.target.value)}>{presets.map(p => <option value={p.id} key={p.id}>{p.name}</option>)}</select><select value={difficulty} onChange={e => setDifficulty(e.target.value)}><option value="easy">Easy AI</option><option value="medium">Medium AI</option><option value="hard">Hard AI</option></select></div>
+              <label><input type="checkbox" checked={privateGame} onChange={e => setPrivateGame(e.target.checked)} /> Private table</label>
+              <Button onClick={() => onlineStore.createLobby({ name: tableName, rule_preset: preset, bot_difficulty: difficulty, is_public: !privateGame })}>Create table</Button>
+            </div>
+          </div>}
+          {online.error && <p className="online-error">{online.error}</p>}
+        </div>
+      </section>
+    </main>
   );
 }
 
@@ -130,8 +211,7 @@ export default function App() {
   const { model, starting, fatalError, platform } = useGameStore();
   const online = useOnlineStore();
   const [confirmNew, setConfirmNew] = useState(false);
-
-  console.log("WELCOME TO LUDO ROYALE  ")
+  const [inGame, setInGame] = useState(false);
 
   useEffect(() => {
     void gameStore.initialize();
@@ -149,9 +229,34 @@ export default function App() {
     );
   }
 
+  if (!inGame && !online.model) {
+    return <SetupScreen onLocal={() => { void gameStore.dispatch("NewGame"); setInGame(true); }} />;
+  }
+
   const activeModel = online.model ?? model;
   const current = activeModel.players.find((player) => player.active);
   const status = activeModel.error ?? activeModel.status;
+  const boardTokens = useMemo(
+    () => activeModel.tokens.map((token) => ({
+      ...token,
+      selectable: token.selectable && (!online.model || current?.id === online.player)
+    })),
+    [activeModel.tokens, current?.id, online.model, online.player]
+  );
+  const handleTokenSelect = useCallback((token: number) => {
+    if (online.model) {
+      onlineStore.move(token);
+      return;
+    }
+    void gameStore.dispatch({ SelectToken: token });
+  }, [online.model]);
+  const handleRoll = useCallback(() => {
+    if (online.model) {
+      onlineStore.roll();
+      return;
+    }
+    void gameStore.dispatch("Roll");
+  }, [online.model]);
 
   return (
     <main className="app-shell">
@@ -186,11 +291,8 @@ export default function App() {
             ))}
           </div>
           <LudoBoard
-            tokens={activeModel.tokens.map((token) => ({
-              ...token,
-              selectable: token.selectable && (!online.model || current?.id === online.player)
-            }))}
-            onSelect={(token) => online.model ? onlineStore.move(token) : void gameStore.dispatch({ SelectToken: token })}
+            tokens={boardTokens}
+            onSelect={handleTokenSelect}
           />
           <div className="mobile-status">{status}</div>
         </section>
@@ -208,7 +310,7 @@ export default function App() {
             size="lg"
             className="roll-button"
             disabled={!activeModel.can_roll || Boolean(online.model && current?.id !== online.player)}
-            onClick={() => online.model ? onlineStore.roll() : void gameStore.dispatch("Roll")}
+            onClick={handleRoll}
           >
             {activeModel.busy
               ? <><Bot className="size-5" /> AI thinking…</>
@@ -238,8 +340,9 @@ export default function App() {
                 <Button variant="ghost" onClick={() => setConfirmNew(false)}>Keep playing</Button>
                 <Button onClick={() => {
                   setConfirmNew(false);
-                  void gameStore.dispatch("NewGame");
-                }}>Start new game</Button>
+                  onlineStore.showLocal();
+                  setInGame(false);
+                }}>Return to setup</Button>
               </div>
             </DialogContent>
           </Dialog>

@@ -9,10 +9,12 @@ license.workspace = true
 argon2 = "0.5"
 axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
+jsonwebtoken = "10"
 ludo-domain = { path = "../ludo-domain" }
 ludo-presentation = { path = "../ludo-presentation" }
 rand.workspace = true
 rand_core = { version = "0.6", features = ["getrandom"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"

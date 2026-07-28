@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile.server
     environment:
       DATABASE_URL: ${DATABASE_URL}
+      ABLY_API_KEY: ${ABLY_API_KEY:-}
       LUDO_SERVER_ADDR: 0.0.0.0:8080
       LUDO_ALLOWED_ORIGINS: http://localhost:5173
     ports:

@@ -1,3 +1,4 @@
+import { memo, useMemo } from "react";
 import { ShieldCheck } from "lucide-react";
 import { cn } from "../../lib/cn";
 import type {
@@ -58,7 +59,7 @@ function cellKind(row: number, column: number) {
   return "track";
 }
 
-function BoardToken({
+const BoardToken = memo(function BoardToken({
   token,
   onSelect
 }: {
@@ -85,33 +86,35 @@ function BoardToken({
       <span>{token.token + 1}</span>
     </button>
   );
-}
+});
 
-export function LudoBoard({
+export const LudoBoard = memo(function LudoBoard({
   tokens,
   onSelect
 }: {
   tokens: TokenViewModel[];
   onSelect(token: number): void;
 }) {
+  const cells = useMemo(() => Array.from({ length: 225 }, (_, index) => {
+    const row = Math.floor(index / 15);
+    const column = index % 15;
+    const safe = SAFE.has(`${row}:${column}`);
+    return (
+      <div
+        className={cn("board-cell", cellKind(row, column))}
+        key={index}
+        aria-hidden="true"
+      >
+        {safe && <ShieldCheck className="safe-mark" />}
+      </div>
+    );
+  }), []);
+
   return (
     <div className="board-frame">
       <div className="board-glow" />
       <div className="ludo-board" aria-label="Ludo board">
-        {Array.from({ length: 225 }, (_, index) => {
-          const row = Math.floor(index / 15);
-          const column = index % 15;
-          const safe = SAFE.has(`${row}:${column}`);
-          return (
-            <div
-              className={cn("board-cell", cellKind(row, column))}
-              key={index}
-              aria-hidden="true"
-            >
-              {safe && <ShieldCheck className="safe-mark" />}
-            </div>
-          );
-        })}
+        {cells}
         <div className="home-crown" aria-hidden="true">♛</div>
         {tokens.map((token) => (
           <BoardToken
@@ -123,4 +126,4 @@ export function LudoBoard({
       </div>
     </div>
   );
-}
+});
