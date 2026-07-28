@@ -9,7 +9,11 @@ async function register(page: Page, identity: string) {
   await page.getByLabel("Email").fill(`${identity.toLowerCase()}@example.test`);
   await page.getByLabel("Password").fill("correct-horse-battery-staple");
   await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page.getByText(`Signed in as ${identity}.`)).toBeVisible();
+  // Argon2 deliberately takes longer under the unoptimized CI server build,
+  // especially while the desktop and mobile projects register concurrently.
+  await expect(page.getByText(`Signed in as ${identity}.`)).toBeVisible({
+    timeout: 15_000
+  });
   await page.keyboard.press("Escape");
 }
 

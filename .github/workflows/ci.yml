@@ -131,6 +131,9 @@ jobs:
           cat server.log
           exit 1
       - run: pnpm --dir apps/client test:e2e
+      - name: Print multiplayer server log on failure
+        if: failure()
+        run: cat server.log
 
   security:
     name: Dependency security audit
