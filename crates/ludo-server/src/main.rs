@@ -311,7 +311,7 @@ async fn online_socket(state: AppState, user: User, socket: WebSocket) {
                         message: "Invalid online message".to_owned(),
                     },
                 )
-                .await
+                .await;
             }
         }
     }
@@ -396,7 +396,7 @@ async fn handle_online(
         ClientMessage::StartGame { lobby_id } => start_game(state, user, lobby_id).await?,
         ClientMessage::Sync { lobby_id } => sync_game(state, user, lobby_id).await?,
         ClientMessage::Roll { lobby_id, revision } => {
-            apply_action(state, user, lobby_id, revision, None).await?
+            apply_action(state, user, lobby_id, revision, None).await?;
         }
         ClientMessage::Move {
             lobby_id,
@@ -594,7 +594,7 @@ async fn send_lobbies(state: &AppState, user: &User) {
                     message: "Could not load games".to_owned(),
                 },
             )
-            .await
+            .await;
         }
     }
 }
