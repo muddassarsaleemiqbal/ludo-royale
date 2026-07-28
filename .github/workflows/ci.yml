@@ -57,7 +57,7 @@ jobs:
       VITE_API_URL: ${{ vars.LUDO_API_URL }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.17.0
       - uses: actions/setup-node@v6
@@ -105,7 +105,7 @@ jobs:
       VITE_API_URL: http://127.0.0.1:8080
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.17.0
       - uses: actions/setup-node@v6
