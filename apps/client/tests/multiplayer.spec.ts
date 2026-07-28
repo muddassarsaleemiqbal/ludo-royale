@@ -9,12 +9,9 @@ async function register(page: Page, identity: string) {
   await page.getByLabel("Email").fill(`${identity.toLowerCase()}@example.test`);
   await page.getByLabel("Password").fill("correct-horse-battery-staple");
   await page.getByRole("button", { name: "Create account" }).click();
-  // Argon2 deliberately takes longer under the unoptimized CI server build,
-  // especially while the desktop and mobile projects register concurrently.
-  await expect(page.getByText(`Signed in as ${identity}.`)).toBeVisible({
+  await expect(page.locator(".setup-profile")).toHaveText(identity, {
     timeout: 15_000
   });
-  await page.keyboard.press("Escape");
 }
 
 test("two players can join, start, act, and reconnect", async ({ browser }) => {
