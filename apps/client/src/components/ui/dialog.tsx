@@ -21,7 +21,7 @@ export function DialogContent({
         )}
       >
         {children}
-        <DialogPrimitive.Close className="absolute right-4 top-4 grid size-9 place-items-center rounded-full text-stone-400 hover:bg-white/10 hover:text-white">
+        <DialogPrimitive.Close className="dialog-close absolute right-4 top-4 grid size-9 place-items-center rounded-full text-stone-400 hover:bg-white/10 hover:text-white">
           <X className="size-4" />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>
