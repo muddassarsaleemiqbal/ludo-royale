@@ -101,17 +101,41 @@ where
 }
 
 fn flag(key: &str, default: bool) -> bool {
-    env::var(key).map_or(default, |value| {
-        matches!(value.as_str(), "1" | "true" | "yes" | "on")
+    flag_value(env::var(key).ok().as_deref(), default)
+}
+
+fn flag_value(value: Option<&str>, default: bool) -> bool {
+    value.map_or(default, |value| {
+        matches!(value, "1" | "true" | "yes" | "on")
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::flag;
+    use super::{flag, flag_value};
 
     #[test]
     fn feature_flag_default_is_stable() {
         assert!(flag("LUDO_TEST_FLAG_THAT_DOES_NOT_EXIST", true));
+    }
+
+    #[test]
+    fn feature_flag_accepts_documented_enabled_values() {
+        for value in ["1", "true", "yes", "on"] {
+            assert!(flag_value(Some(value), false), "{value} should enable");
+        }
+    }
+
+    #[test]
+    fn feature_flag_rejects_other_values() {
+        for value in ["0", "false", "off", "TRUE", "", "enabled"] {
+            assert!(!flag_value(Some(value), true), "{value} should disable");
+        }
+    }
+
+    #[test]
+    fn feature_flag_uses_the_requested_default_when_absent() {
+        assert!(flag_value(None, true));
+        assert!(!flag_value(None, false));
     }
 }

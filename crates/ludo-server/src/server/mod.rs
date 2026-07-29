@@ -505,6 +505,24 @@ mod tests {
     }
 
     #[test]
+    fn websocket_session_token_rejects_missing_or_malformed_protocols() {
+        let headers = HeaderMap::new();
+        assert!(websocket_token(&headers).is_err());
+
+        for value in ["session-token", "chat, session-token", "ludo,", "ludo,   "] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "sec-websocket-protocol",
+                HeaderValue::from_str(value).unwrap_or_else(|_| std::process::abort()),
+            );
+            assert!(
+                websocket_token(&headers).is_err(),
+                "{value} must be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn online_bots_produce_ordered_presentation_frames() {
         let mut players = standard_players();
         players[0].controller = Controller::Bot;

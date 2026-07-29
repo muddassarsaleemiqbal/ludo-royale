@@ -97,3 +97,55 @@ pub(super) fn cors_layer(config: &ServerConfig) -> Result<CorsLayer, Box<dyn std
         .allow_methods(Any)
         .allow_headers(Any))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BotDifficulty, RulePreset, parse_difficulty, parse_preset, player_id,
+        validate_lobby_options,
+    };
+
+    #[test]
+    fn every_documented_lobby_option_is_valid() {
+        for preset in ["classic", "quick", "tournament"] {
+            for difficulty in ["easy", "medium", "hard"] {
+                assert!(validate_lobby_options(preset, difficulty).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_lobby_options_are_rejected() {
+        for (preset, difficulty) in [
+            ("speed", "easy"),
+            ("classic", "expert"),
+            ("", ""),
+            ("Classic", "medium"),
+        ] {
+            assert!(validate_lobby_options(preset, difficulty).is_err());
+        }
+    }
+
+    #[test]
+    fn preset_parser_maps_known_values_and_has_a_safe_default() {
+        assert_eq!(parse_preset("quick"), RulePreset::Quick);
+        assert_eq!(parse_preset("tournament"), RulePreset::Tournament);
+        assert_eq!(parse_preset("classic"), RulePreset::Classic);
+        assert_eq!(parse_preset("unknown"), RulePreset::Classic);
+    }
+
+    #[test]
+    fn difficulty_parser_maps_known_values_and_has_a_safe_default() {
+        assert_eq!(parse_difficulty("easy"), BotDifficulty::Easy);
+        assert_eq!(parse_difficulty("hard"), BotDifficulty::Hard);
+        assert_eq!(parse_difficulty("medium"), BotDifficulty::Medium);
+        assert_eq!(parse_difficulty("unknown"), BotDifficulty::Medium);
+    }
+
+    #[test]
+    fn online_seat_indexes_map_to_domain_player_ids() {
+        for index in 0..4 {
+            assert_eq!(player_id(index).index(), usize::from(index));
+        }
+    }
+}

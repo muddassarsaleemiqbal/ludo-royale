@@ -60,3 +60,50 @@ impl IntoResponse for ApiError {
         (self.0, Json(serde_json::json!({ "error": self.1 }))).into_response()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ApiError, StatusCode};
+
+    #[test]
+    fn stable_game_errors_have_protocol_codes() {
+        let cases = [
+            (ApiError::bad_request("Game not found"), "game_not_found"),
+            (
+                ApiError::conflict("The game advanced; refreshing the board"),
+                "stale_revision",
+            ),
+            (ApiError::conflict("This table is full"), "lobby_full"),
+            (
+                ApiError::unauthorized("Only the host can start this game"),
+                "host_required",
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(error.code(), expected);
+        }
+    }
+
+    #[test]
+    fn status_fallbacks_are_safe_and_predictable() {
+        assert_eq!(ApiError::unauthorized("No").code(), "unauthorized");
+        assert_eq!(ApiError::conflict("Changed").code(), "conflict");
+        assert_eq!(
+            ApiError::too_many_requests("Slow down").code(),
+            "rate_limited"
+        );
+        assert_eq!(ApiError::bad_request("Bad").code(), "invalid_request");
+        assert_eq!(ApiError::internal("Failed").code(), "internal_error");
+    }
+
+    #[test]
+    fn constructors_preserve_public_status_and_message() {
+        let error = ApiError::bad_request("Invalid game options");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.1, "Invalid game options");
+
+        let error = ApiError::too_many_requests("Try later");
+        assert_eq!(error.0, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error.1, "Try later");
+    }
+}

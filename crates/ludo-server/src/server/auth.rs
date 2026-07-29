@@ -155,12 +155,12 @@ pub(super) fn websocket_token(headers: &HeaderMap) -> Result<&str, ApiError> {
         .get("sec-websocket-protocol")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .find(|value| *value != "ludo")
+            let mut protocols = value.split(',').map(str::trim);
+            match (protocols.next(), protocols.next(), protocols.next()) {
+                (Some("ludo"), Some(token), None) if !token.is_empty() => Some(token),
+                _ => None,
+            }
         })
-        .filter(|value| !value.is_empty())
         .ok_or_else(|| ApiError::unauthorized("Login required"))
 }
 
@@ -176,7 +176,13 @@ pub(super) fn now() -> i64 {
 
 pub(super) fn normalize_email(value: &str) -> Result<String, ApiError> {
     let value = value.trim().to_ascii_lowercase();
-    if value.len() > 254 || !value.contains('@') {
+    let valid_shape = value.split_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty()
+            && !domain.is_empty()
+            && !domain.contains('@')
+            && !value.chars().any(char::is_whitespace)
+    });
+    if value.len() > 254 || !valid_shape {
         return Err(ApiError::bad_request("Enter a valid email"));
     }
     Ok(value)
@@ -204,4 +210,66 @@ pub(super) fn hash_password(value: &str) -> Result<String, ApiError> {
         .hash_password(value.as_bytes(), &SaltString::generate(&mut OsRng))
         .map(|h| h.to_string())
         .map_err(|_| ApiError::internal("Password hashing failed"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_email, normalize_name, token_hash, validate_password};
+
+    #[test]
+    fn email_normalization_trims_and_lowercases() {
+        assert_eq!(
+            normalize_email("  Player.Name+tag@Example.COM ")
+                .ok()
+                .as_deref(),
+            Some("player.name+tag@example.com")
+        );
+    }
+
+    #[test]
+    fn invalid_email_shapes_are_rejected() {
+        for email in [
+            "",
+            "player",
+            "@",
+            "player@",
+            "@example.com",
+            "a@@example.com",
+            "a b@example.com",
+        ] {
+            assert!(normalize_email(email).is_err());
+        }
+        assert!(normalize_email(&"a".repeat(255)).is_err());
+    }
+
+    #[test]
+    fn display_names_are_trimmed_and_length_limited() {
+        assert_eq!(
+            normalize_name("  Royal Player  ").ok().as_deref(),
+            Some("Royal Player")
+        );
+        for name in ["", "x"] {
+            assert!(normalize_name(name).is_err());
+        }
+        assert!(normalize_name(&"x".repeat(25)).is_err());
+    }
+
+    #[test]
+    fn passwords_enforce_documented_bounds() {
+        assert!(validate_password("0123456789").is_ok());
+        assert!(validate_password(&"x".repeat(128)).is_ok());
+        assert!(validate_password("short").is_err());
+        assert!(validate_password(&"x".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn session_token_hashes_are_stable_and_do_not_expose_the_token() {
+        let first = token_hash("royal-secret");
+        let second = token_hash("royal-secret");
+        assert_eq!(first, second);
+        assert_ne!(first, "royal-secret");
+        assert_eq!(first.len(), 64);
+        assert!(first.chars().all(|character| character.is_ascii_hexdigit()));
+        assert_ne!(first, token_hash("another-secret"));
+    }
 }

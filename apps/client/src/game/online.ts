@@ -2,6 +2,7 @@ import { Realtime } from "ably";
 import type { Message } from "ably";
 import { useSyncExternalStore } from "react";
 import type { GameViewModel } from "./types";
+import { networkErrorMessage, resolveApiUrl, websocketUrl } from "./server-config";
 
 export type User = { id: string; email: string; display_name: string };
 export type LobbySummary = {
@@ -90,27 +91,10 @@ type ServerMessage =
       message: string; recoverable: boolean
     };
 
-function resolveApiUrl() {
-  const configured = (import.meta.env.VITE_API_URL as string | undefined)?.trim();
-  const candidate = configured || (import.meta.env.DEV ? "http://localhost:8080" : "");
-  if (!candidate) return {
-    api: null,
-    error: "Online play is not configured in this build. Install a release built with the public multiplayer server URL."
-  };
-  try {
-    const url = new URL(candidate);
-    const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
-    if (!["http:", "https:"].includes(url.protocol) || (import.meta.env.PROD && !local && url.protocol !== "https:"))
-      throw new Error("Production multiplayer requires HTTPS");
-    return { api: url.toString().replace(/\/$/, ""), error: null };
-  } catch {
-    return {
-      api: null,
-      error: "This build contains an invalid multiplayer server URL. Please install a correctly configured release."
-    };
-  }
-}
-const serverConfig = resolveApiUrl();
+const serverConfig = resolveApiUrl(
+  import.meta.env.VITE_API_URL as string | undefined,
+  { development: import.meta.env.DEV, production: import.meta.env.PROD }
+);
 const api = serverConfig.api;
 const tokenKey = "ludo-online-token";
 const lobbyKey = "ludo-online-lobby";
@@ -359,10 +343,7 @@ class OnlineStore {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    const url = new URL(api);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.pathname = "/api/online";
-    this.socket = new WebSocket(url, ["ludo", this.token]);
+    this.socket = new WebSocket(websocketUrl(api), ["ludo", this.token]);
     this.socket.onopen = () => {
       this.reconnectAttempt = 0;
       this.set({ connected: true, error: null, syncing: Boolean(this.snapshot.lobbyId) });
@@ -603,11 +584,7 @@ function isServerMessage(value: unknown): value is ServerMessage {
   return typeof value === "object" && value !== null
     && "type" in value && typeof value.type === "string";
 }
-function messageFrom(error: unknown) {
-  if (error instanceof TypeError && /fetch|network|load/i.test(error.message))
-    return "Could not reach the multiplayer server. Check your internet connection or install the latest configured release.";
-  return error instanceof Error ? error.message : String(error);
-}
+const messageFrom = networkErrorMessage;
 
 export const onlineStore = new OnlineStore();
 export function useOnlineStore() {

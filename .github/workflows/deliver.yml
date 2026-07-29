@@ -111,9 +111,11 @@ jobs:
     if: needs.prepare.outputs.skip != 'true'
     name: Vercel production
     runs-on: ubuntu-24.04
+    env:
+      PRODUCTION_WEB_URL: https://ludo-six-pink.vercel.app
     environment:
       name: production
-      url: ${{ steps.deploy.outputs.url }}
+      url: ${{ env.PRODUCTION_WEB_URL }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -138,10 +140,20 @@ jobs:
           echo "url=$url" >> "$GITHUB_OUTPUT"
       - name: Production smoke check
         run: |
+          set -euo pipefail
           for attempt in {1..30}; do
-            curl --fail --silent --show-error "${{ steps.deploy.outputs.url }}" | grep -q "Ludo Royale" && exit 0
+            if curl --fail --silent --show-error \
+              --max-time 15 \
+              "$PRODUCTION_WEB_URL/" |
+              grep -q "Ludo Royale"; then
+              echo "Production is healthy at $PRODUCTION_WEB_URL"
+              exit 0
+            fi
+            echo "Attempt $attempt/30 is not healthy yet; retrying in 2 seconds."
             sleep 2
           done
+          echo "Production smoke check failed for $PRODUCTION_WEB_URL"
+          curl --silent --show-error --head --max-time 15 "$PRODUCTION_WEB_URL/" || true
           exit 1
 
   publish:

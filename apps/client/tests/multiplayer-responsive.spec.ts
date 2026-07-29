@@ -143,3 +143,49 @@ test("host lobby controls stack without overflow on compact screens", async ({ p
     await expectResponsive(page);
   }
 });
+
+test("table filters and invite entry remain functional with realistic data", async ({ page }) => {
+  await mockOnline(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Online tables" }).click();
+
+  await page.getByLabel("Filter by rules").selectOption("quick");
+  await expect(page.getByText("Fast Friends")).toBeVisible();
+  await expect(page.getByText("Weekend Championship Warmup")).not.toBeVisible();
+
+  await page.getByLabel("Filter by rules").selectOption("all");
+  await page.getByLabel("Filter by occupancy").selectOption("nearly");
+  await expect(page.getByText("Weekend Championship Warmup")).toBeVisible();
+  await expect(page.getByText("Fast Friends")).not.toBeVisible();
+
+  await page.getByLabel("Invite code").fill("royal123");
+  await expect(page.getByLabel("Invite code")).toHaveValue("ROYAL123");
+  await page.getByRole("button", { name: "Join invite" }).click();
+  await expectResponsive(page);
+});
+
+test("player hub tabs expose their expected content and close with Escape", async ({ page }) => {
+  await mockOnline(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: /Alexandria Royal/ }).click();
+
+  await page.getByRole("button", { name: "Friends", exact: true }).click();
+  await expect(page.getByText("A Very Long Player Name")).toBeVisible();
+  await expect(page.getByText("Morgan invited you")).toBeVisible();
+
+  await page.getByRole("button", { name: "Matches", exact: true }).click();
+  await expect(page.getByText("Ranked match")).toBeVisible();
+  await expect(page.getByText("+125 XP · +18")).toBeVisible();
+
+  await page.getByRole("button", { name: "Ranked", exact: true }).click();
+  await expect(page.getByText("Golden Crown Season")).toBeVisible();
+  await expect(page.getByText("Season Player 1")).toBeVisible();
+
+  await page.getByRole("button", { name: "Rewards", exact: true }).click();
+  await expect(page.getByText("Daily challenges")).toBeVisible();
+  await expect(page.getByText("First Crown")).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+});

@@ -75,6 +75,7 @@ jobs:
       - run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
       - run: pnpm --dir apps/client install --frozen-lockfile
       - run: pnpm --dir apps/client typecheck
+      - run: pnpm --dir apps/client test
       - run: node scripts/build-web.mjs --require-api-url
       - run: node scripts/ops/performance-budget.mjs
       - run: pnpm --dir apps/client audit --audit-level high

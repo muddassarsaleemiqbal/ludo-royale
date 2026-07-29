@@ -119,3 +119,109 @@ async fn active_match_state_survives_a_new_database_connection() {
         .unwrap_or_default();
     assert_eq!(status, "playing");
 }
+
+#[tokio::test]
+async fn shared_presence_is_upserted_once_per_player() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let player = user(&pool, "Presence Player").await;
+    let statement = "
+        INSERT INTO user_presence(user_id,last_seen_at)
+        VALUES($1,CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET last_seen_at=CURRENT_TIMESTAMP";
+    sqlx::query(statement)
+        .bind(player)
+        .execute(&pool)
+        .await
+        .unwrap_or_else(|error| panic!("initial presence failed: {error}"));
+    sqlx::query(statement)
+        .bind(player)
+        .execute(&pool)
+        .await
+        .unwrap_or_else(|error| panic!("presence update failed: {error}"));
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_presence WHERE user_id=$1")
+        .bind(player)
+        .fetch_one(&pool)
+        .await
+        .unwrap_or_default();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn account_deletion_requests_are_unique_and_cascade_with_users() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let player = user(&pool, "Privacy Player").await;
+    sqlx::query("INSERT INTO account_deletion_requests(user_id) VALUES($1)")
+        .bind(player)
+        .execute(&pool)
+        .await
+        .unwrap_or_else(|error| panic!("deletion request failed: {error}"));
+    let duplicate = sqlx::query("INSERT INTO account_deletion_requests(user_id) VALUES($1)")
+        .bind(player)
+        .execute(&pool)
+        .await;
+    assert!(duplicate.is_err());
+
+    sqlx::query("DELETE FROM users WHERE id=$1")
+        .bind(player)
+        .execute(&pool)
+        .await
+        .unwrap_or_else(|error| panic!("user deletion failed: {error}"));
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM account_deletion_requests WHERE user_id=$1")
+            .bind(player)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_default();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn progression_constraints_reject_invalid_values() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let player = user(&pool, "Progress Player").await;
+    let negative_xp = sqlx::query(
+        "INSERT INTO player_progress(user_id,xp) VALUES($1,-1)
+         ON CONFLICT(user_id) DO UPDATE SET xp=-1",
+    )
+    .bind(player)
+    .execute(&pool)
+    .await;
+    assert!(negative_xp.is_err());
+
+    let invalid_cosmetic = sqlx::query(
+        "INSERT INTO player_progress(user_id,selected_dice) VALUES($1,'pay-to-win')
+         ON CONFLICT(user_id) DO UPDATE SET selected_dice='pay-to-win'",
+    )
+    .bind(player)
+    .execute(&pool)
+    .await;
+    assert!(invalid_cosmetic.is_err());
+}
+
+#[tokio::test]
+async fn production_hot_path_indexes_exist_after_migration() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let names: Vec<String> = sqlx::query_scalar(
+        "SELECT indexname FROM pg_indexes
+         WHERE schemaname=current_schema()
+           AND indexname = ANY($1)",
+    )
+    .bind(vec![
+        "match_results_completed_idx",
+        "friendships_canonical_unique",
+        "season_ratings_leaderboard_idx",
+        "user_presence_seen_idx",
+    ])
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+    assert_eq!(names.len(), 4);
+}
