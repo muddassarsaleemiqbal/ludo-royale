@@ -12,7 +12,10 @@ type StoreSnapshot = {
   starting: boolean;
   fatalError: string | null;
   platform: "web" | "native";
+  resumeAvailable: boolean;
 };
+
+const localGameKey = "ludo-local-game-v1";
 
 class GameStore {
   private readonly client: GameClient = createGameClient();
@@ -22,7 +25,8 @@ class GameStore {
     model: null,
     starting: true,
     fatalError: null,
-    platform: window.__TAURI__ ? "native" : "web"
+    platform: window.__TAURI__ ? "native" : "web",
+    resumeAvailable: false
   };
 
   readonly subscribe = (listener: () => void) => {
@@ -40,7 +44,24 @@ class GameStore {
   private async initializeOnce() {
     try {
       const model = await this.client.initialize();
-      this.setSnapshot({ ...this.snapshot, model, starting: false });
+      const saved = localStorage.getItem(localGameKey);
+      if (saved) {
+        try {
+          await this.client.restore(saved);
+          const resumed = await this.client.dispatch("Resume");
+          this.setSnapshot({
+            ...this.snapshot,
+            model: resumed.model,
+            starting: false,
+            resumeAvailable: resumed.model.revision > 0 && resumed.model.winner === null
+          });
+          for (const effect of resumed.effects) void this.execute(effect);
+          return;
+        } catch {
+          localStorage.removeItem(localGameKey);
+        }
+      }
+      this.setSnapshot({ ...this.snapshot, model, starting: false, resumeAvailable: false });
     } catch (error) {
       this.setSnapshot({
         ...this.snapshot,
@@ -53,7 +74,26 @@ class GameStore {
   async dispatch(action: GameAction) {
     try {
       const update = await this.client.dispatch(action);
-      this.setSnapshot({ ...this.snapshot, model: update.model });
+      const isNewGame = action === "NewGame"
+        || (typeof action === "object" && "NewGameWith" in action);
+      if (
+        update.model.winner === null &&
+        update.model.revision > 0 &&
+        !isNewGame
+      ) {
+        try {
+          localStorage.setItem(localGameKey, await this.client.serialize());
+        } catch {
+          // Persistence is best-effort; storage restrictions cannot stop play.
+        }
+      } else if (update.model.winner !== null || isNewGame) {
+        localStorage.removeItem(localGameKey);
+      }
+      this.setSnapshot({
+        ...this.snapshot,
+        model: update.model,
+        resumeAvailable: update.model.winner === null && update.model.revision > 0
+      });
       for (const effect of update.effects) void this.execute(effect);
     } catch (error) {
       this.setSnapshot({ ...this.snapshot, fatalError: String(error) });

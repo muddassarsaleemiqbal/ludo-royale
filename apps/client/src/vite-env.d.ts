@@ -5,6 +5,8 @@ declare module "*ludo_web.js" {
   export class WasmGame {
     constructor();
     snapshot_json(): string;
+    state_json(): string;
+    restore_json(state: string): string;
     dispatch_json(action: string): string;
   }
   export function evaluate_bot_json(request: string): string;

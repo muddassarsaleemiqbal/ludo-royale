@@ -5,6 +5,7 @@ export interface PlayerViewModel {
   id: number;
   name: string;
   color: PlayerColor;
+  human: boolean;
   active: boolean;
   finished: number;
 }
@@ -15,6 +16,7 @@ export interface TokenViewModel {
   color: PlayerColor;
   position: TokenPosition;
   selectable: boolean;
+  preview: TokenPosition | null;
 }
 
 export interface GameViewModel {
@@ -37,6 +39,7 @@ export type BotDecision = {
 };
 
 export type GameAction =
+  | "Resume"
   | "NewGame"
   | { NewGameWith: { preset: "Classic" | "Quick" | "Tournament"; bot_difficulty: "Easy" | "Medium" | "Hard" } }
   | "Roll"
@@ -65,5 +68,7 @@ export interface GameClient {
   dispatch(action: GameAction): Promise<RuntimeUpdate>;
   evaluateBot(request: unknown): Promise<BotDecision>;
   randomDice(): Promise<number>;
+  serialize(): Promise<string>;
+  restore(snapshot: string): Promise<GameViewModel>;
   close(): void;
 }

@@ -32,6 +32,19 @@ mod wasm {
             serde_json::to_string(&self.runtime.model()).map_err(js_error)
         }
 
+        /// Returns the validated domain state for device-local persistence.
+        pub fn state_json(&self) -> Result<String, JsValue> {
+            serde_json::to_string(self.runtime.state()).map_err(js_error)
+        }
+
+        /// Restores a device-local domain snapshot after invariant validation.
+        pub fn restore_json(&mut self, state: &str) -> Result<String, JsValue> {
+            let state: ludo_domain::GameState = serde_json::from_str(state).map_err(js_error)?;
+            let state = state.validated().map_err(js_error)?;
+            self.runtime = GameRuntime::from_state(state);
+            self.snapshot_json()
+        }
+
         /// Dispatches one JSON action and returns the complete update as JSON.
         ///
         /// # Errors

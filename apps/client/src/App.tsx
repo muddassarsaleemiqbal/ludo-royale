@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Award,
   Bot,
   Check,
   CheckCircle2,
@@ -11,16 +12,23 @@ import {
   Gamepad2,
   Globe2,
   LockKeyhole,
+  History,
   MessageCircle,
   Plus,
+  Palette,
   RefreshCw,
   Settings,
+  Search,
   Shield,
   Sparkles,
   Trophy,
+  UserPlus,
   UserX,
   UsersRound,
-  Volume2
+  Swords,
+  Zap,
+  Volume2,
+  WifiOff
 } from "lucide-react";
 import { gameStore, useGameStore } from "./game/store";
 import { Button } from "./components/ui/button";
@@ -91,6 +99,58 @@ function OnlineDialog() {
   );
 }
 
+const achievementNames: Record<string, string> = {
+  first_win: "First Crown", veteran_10: "Table Veteran", streak_3: "Hat Trick",
+  level_5: "Rising Royal", ranked_1200: "Elite Contender"
+};
+
+function PlayerHubDialog() {
+  const online = useOnlineStore();
+  const [tab, setTab] = useState<"profile" | "friends" | "matches" | "ranked" | "rewards">("profile");
+  const [query, setQuery] = useState("");
+  const [frame, setFrame] = useState(0);
+  useEffect(() => { onlineStore.getHub(); }, []);
+  useEffect(() => { setFrame(0); }, [online.replay?.matchId]);
+  const hub = online.hub;
+  if (!hub) return <DialogContent><DialogTitle>Royal player hub</DialogTitle><DialogDescription>Loading your profile…</DialogDescription></DialogContent>;
+  const profile = hub.profile;
+  const replayFrame = online.replay?.frames[frame];
+  const canInvite = Boolean(online.lobby && online.lobby.host_user_id === online.user?.id);
+  return (
+    <DialogContent className="hub-dialog">
+      <div className="hub-heading">
+        <div><DialogTitle>Royal player hub</DialogTitle><DialogDescription>Friends, progression, ranked play, and rewards.</DialogDescription></div>
+        <div className="hub-level"><Crown /><strong>Level {profile.level}</strong><span>{profile.xp % 500}/500 XP</span></div>
+      </div>
+      <nav className="hub-tabs" aria-label="Player hub">
+        {([
+          ["profile", <Crown />, "Profile"], ["friends", <UsersRound />, "Friends"],
+          ["matches", <History />, "Matches"], ["ranked", <Swords />, "Ranked"],
+          ["rewards", <Award />, "Rewards"]
+        ] as const).map(([id, icon, label]) => <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{icon}{label}</button>)}
+      </nav>
+      <div className="hub-content">
+        {tab === "profile" && <div className="hub-profile">
+          <section className="profile-hero"><div className="profile-avatar">{profile.display_name.slice(0, 1).toUpperCase()}</div><div><span>Royal player</span><h3>{profile.display_name}</h3><small>{profile.rating} season rating</small></div></section>
+          <div className="stat-grid"><div><strong>{profile.matches}</strong><span>Matches</span></div><div><strong>{profile.wins}</strong><span>Wins</span></div><div><strong>{profile.matches ? Math.round(profile.wins / profile.matches * 100) : 0}%</strong><span>Win rate</span></div><div><strong>{profile.best_streak}</strong><span>Best streak</span></div></div>
+          <div className="xp-card"><div><span>Level {profile.level}</span><strong>{500 - profile.xp % 500} XP to next level</strong></div><progress value={profile.xp % 500} max={500} /></div>
+        </div>}
+        {tab === "friends" && <div className="hub-stack">
+          {hub.invites.map(invite => <div className="hub-notice" key={invite.id}><div><strong>{invite.sender_name} invited you</strong><span>{invite.lobby_name}</span></div><Button size="sm" onClick={() => onlineStore.respondFriendInvite(invite.id, true)}>Join</Button><Button size="sm" variant="ghost" onClick={() => onlineStore.respondFriendInvite(invite.id, false)}>Decline</Button></div>)}
+          <form className="player-search" onSubmit={event => { event.preventDefault(); onlineStore.searchPlayers(query); }}><Search /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Find players by name" minLength={2}/><Button size="sm" type="submit">Search</Button></form>
+          {online.playerSearch.map(player => <div className="social-row" key={player.user_id}><span className={`presence-dot ${player.presence}`} /><div><strong>{player.display_name}</strong><small>Level {player.level} · {player.rating} rating</small></div>{player.relationship === "none" && <Button size="sm" variant="secondary" onClick={() => onlineStore.sendFriendRequest(player.user_id)}><UserPlus /> Add</Button>}{player.relationship === "incoming" && <Button size="sm" onClick={() => onlineStore.respondFriendRequest(player.user_id, true)}>Accept</Button>}<span className="relationship-label">{player.relationship !== "none" ? player.relationship : ""}</span></div>)}
+          <h3>Your circle</h3>
+          {hub.friends.length ? hub.friends.map(friend => <div className="social-row" key={friend.user_id}><span className={`presence-dot ${friend.presence}`} /><div><strong>{friend.display_name}</strong><small>Level {friend.level} · {friend.rating} rating</small></div>{friend.relationship === "incoming" ? <><Button size="sm" onClick={() => onlineStore.respondFriendRequest(friend.user_id, true)}>Accept</Button><Button size="sm" variant="ghost" onClick={() => onlineStore.respondFriendRequest(friend.user_id, false)}>Decline</Button></> : friend.relationship === "friend" ? <>{canInvite && <Button size="sm" variant="secondary" onClick={() => onlineStore.inviteFriend(friend.user_id)}>Invite</Button>}<Button size="sm" variant="ghost" onClick={() => onlineStore.removeFriend(friend.user_id)}>Remove</Button></> : <span className="relationship-label">Request sent</span>}</div>) : <div className="hub-empty"><UsersRound /><span>Find players to build your circle.</span></div>}
+        </div>}
+        {tab === "matches" && <div className="hub-stack">{hub.matches.length ? hub.matches.map(match => <div className="match-row" key={match.id}><div className={`placement placement-${match.placement}`}>#{match.placement}</div><div><strong>{match.ranked ? "Ranked" : "Classic"} match</strong><small>{match.opponents.length ? `vs ${match.opponents.join(", ")}` : "vs Royal AI"} · {new Date(match.played_at).toLocaleDateString()}</small></div><span>+{match.xp_earned} XP{match.rating_delta ? ` · ${match.rating_delta > 0 ? "+" : ""}${match.rating_delta}` : ""}</span><Button size="sm" variant="ghost" onClick={() => onlineStore.getReplay(match.id)}>Replay</Button></div>) : <div className="hub-empty"><History /><span>Your completed online matches will appear here.</span></div>}</div>}
+        {tab === "ranked" && <div className="ranked-hub"><section className="season-card"><div><span>{hub.season_name}</span><h3>{profile.rating} rating</h3><small>{hub.season_ends_at ? `Ends ${new Date(hub.season_ends_at).toLocaleDateString()}` : "Ranked play is between seasons"}</small></div><Button disabled={online.pending === "ranked" || Boolean(online.lobby)} onClick={() => onlineStore.rankedMatch()}><Swords /> Find ranked match</Button></section><div className="leaderboard"><div className="leaderboard-head"><strong>Season leaders</strong><span>Rating</span></div>{hub.leaderboard.map(row => <div className={row.user_id === profile.user_id ? "is-you" : ""} key={row.user_id}><b>#{row.rank}</b><span>{row.display_name}</span><small>{row.wins}/{row.matches} wins</small><strong>{row.rating}</strong></div>)}</div></div>}
+        {tab === "rewards" && <div className="rewards-grid"><section><h3><Zap /> Daily challenges</h3>{hub.challenges.map(challenge => <div className="challenge" key={challenge.key}><div><strong>{challenge.title}</strong><span>{challenge.claimed ? "Complete" : `+${challenge.reward} XP`}</span></div><progress value={challenge.progress} max={challenge.target}/><small>{challenge.progress}/{challenge.target}</small></div>)}</section><section><h3><Award /> Achievements</h3><div className="achievement-grid">{Object.entries(achievementNames).map(([key, name]) => <div className={hub.achievements.includes(key) ? "unlocked" : ""} key={key}><Award /><strong>{name}</strong><small>{hub.achievements.includes(key) ? "Unlocked" : "Locked"}</small></div>)}</div></section><section className="cosmetics"><h3><Palette /> Cosmetics</h3><label>Dice theme<select value={profile.selected_dice} onChange={event => onlineStore.setCosmetics(event.target.value, profile.selected_tokens)}>{([["ivory",1],["obsidian",3],["emerald",5],["royal",8]] as [string,number][]).map(([theme, level]) => <option key={theme} value={theme} disabled={profile.level < level}>{theme} · level {level}</option>)}</select></label><label>Token theme<select value={profile.selected_tokens} onChange={event => onlineStore.setCosmetics(profile.selected_dice, event.target.value)}>{([["classic",1],["neon",3],["marble",5],["metallic",8]] as [string,number][]).map(([theme, level]) => <option key={theme} value={theme} disabled={profile.level < level}>{theme} · level {level}</option>)}</select></label></section></div>}
+      </div>
+      {replayFrame && <div className="replay-overlay"><div className="replay-card"><div className="replay-head"><div><strong>Match replay</strong><span>{replayFrame.status}</span></div><Button size="sm" variant="ghost" onClick={() => onlineStore.closeReplay()}>Close</Button></div><div className="replay-board"><LudoBoard tokens={replayFrame.tokens.map(token => ({ ...token, selectable: false }))} onSelect={() => undefined} showSafeCells animate={false} recentMoveKey={null} capturedKeys={[]} homeKey={null}/></div><div className="replay-controls"><Button size="sm" variant="secondary" disabled={frame === 0} onClick={() => setFrame(value => value - 1)}>Previous</Button><span>{frame + 1} / {online.replay!.frames.length}</span><Button size="sm" disabled={frame + 1 >= online.replay!.frames.length} onClick={() => setFrame(value => value + 1)}>Next</Button></div></div></div>}
+    </DialogContent>
+  );
+}
+
 const presets = [
   { id: "classic", name: "Classic", detail: "Safe stars, blockades and bonus turns", time: "35–50 min" },
   { id: "quick", name: "Quick play", detail: "Faster routes and forgiving home rolls", time: "15–25 min" },
@@ -102,7 +162,15 @@ type LocalSetup = {
   botDifficulty: "Easy" | "Medium" | "Hard";
 };
 
-function SetupScreen({ onLocal }: { onLocal: (setup: LocalSetup) => void }) {
+function SetupScreen({
+  onLocal,
+  resumeAvailable,
+  onResume
+}: {
+  onLocal: (setup: LocalSetup) => void;
+  resumeAvailable: boolean;
+  onResume: () => void;
+}) {
   const online = useOnlineStore();
   const [mode, setMode] = useState<"local" | "online">("local");
   const [preset, setPreset] = useState("classic");
@@ -130,7 +198,7 @@ function SetupScreen({ onLocal }: { onLocal: (setup: LocalSetup) => void }) {
       <header className="setup-header">
         <div className="brand"><div className="brand-mark small"><span>♟</span></div><div><strong>Ludo Royale</strong><span>Choose your table</span></div></div>
         <div className="setup-profile">
-          {online.user ? <><span className={online.connected && online.realtimeConnected ? "online-dot" : ""} />{online.user.display_name}</> : <Dialog><DialogTrigger asChild><Button variant="secondary">Sign in</Button></DialogTrigger><OnlineDialog /></Dialog>}
+          {online.user ? <Dialog><DialogTrigger asChild><button className="profile-trigger"><span className={online.connected ? "online-dot" : ""} /><span>{online.user.display_name}</span>{online.hub && <small>Lv. {online.hub.profile.level}</small>}</button></DialogTrigger><PlayerHubDialog /></Dialog> : <Dialog><DialogTrigger asChild><Button variant="secondary">Sign in</Button></DialogTrigger><OnlineDialog /></Dialog>}
         </div>
       </header>
 
@@ -158,16 +226,23 @@ function SetupScreen({ onLocal }: { onLocal: (setup: LocalSetup) => void }) {
               <div><strong>AI difficulty</strong><small>Applies to all three opponents</small></div>
               <div className="segmented">{["easy","medium","hard"].map(level => <button key={level} className={difficulty === level ? "active" : ""} onClick={() => setDifficulty(level)}>{level}</button>)}</div>
             </div>
-            <Button size="lg" className="setup-primary" onClick={() => onLocal(localSetup())}>Start solo game <ChevronRight /></Button>
-          </> : !online.user ? <div className="signin-prompt">
+            <div className="setup-actions">
+              {resumeAvailable && <Button size="lg" variant="secondary" onClick={onResume}>Resume saved game</Button>}
+              <Button size="lg" className="setup-primary" onClick={() => onLocal(localSetup())}>Start solo game <ChevronRight /></Button>
+            </div>
+          </> : online.configurationError ? <div className="signin-prompt">
+            <WifiOff />
+            <h2>Online server unavailable</h2>
+            <p>{online.configurationError}</p>
+          </div> : !online.user ? <div className="signin-prompt">
             <LockKeyhole /><h2>Sign in to join the tables</h2><p>An account keeps games fair and lets you reconnect on any device.</p>
             <Dialog><DialogTrigger asChild><Button>Sign in or create account</Button></DialogTrigger><OnlineDialog /></Dialog>
           </div> : online.lobby ? <div className="lobby-room">
-            <div className="lobby-title"><div><span>Waiting room · {online.lobby.is_public ? "Public" : "Private"}</span><h2>{online.lobby.name}</h2></div><small>{online.lobby.rule_preset} · {online.lobby.bot_difficulty} AI · {online.lobby.turn_seconds}s</small></div>
+            <div className="lobby-title"><div><span>Waiting room · {online.lobby.ranked ? "Ranked" : online.lobby.is_public ? "Public" : "Private"}</span><h2>{online.lobby.name}</h2></div><small>{online.lobby.rule_preset} · {online.lobby.bot_difficulty} AI · {online.lobby.turn_seconds}s</small></div>
             <div className="invite-strip"><code>{online.lobby.invite_code}</code><Button size="sm" variant="secondary" onClick={() => void onlineStore.copyInvite()}><Copy /> Copy invite</Button></div>
             <div className="seat-list">{online.lobby.seats.map((seat, index) => <div className={seat.is_bot ? "bot-seat" : "human-seat"} key={seat.seat}><span>{index + 1}</span><div><strong>{seat.name}</strong><small>{seat.is_bot ? "AI fills this seat" : `${seat.ready ? "Ready" : "Not ready"} · ${seat.presence}`}</small></div>{seat.ready && !seat.is_bot && <CheckCircle2 className="ready-icon" />}{online.lobby?.host_user_id === online.user?.id && seat.user_id && seat.user_id !== online.user?.id && <button className="seat-kick" aria-label={`Remove ${seat.name}`} onClick={() => onlineStore.kickPlayer(seat.user_id!)}><UserX /></button>}{online.lobby?.host_user_id === seat.user_id && <Crown />}</div>)}</div>
             {online.lobby.host_user_id === online.user.id && online.lobby.requests.length > 0 && <div className="request-list"><strong>Join requests</strong>{online.lobby.requests.map(request => <div key={request.id}><span>{request.display_name}</span><Button size="sm" disabled={online.pending === `request:${request.id}`} onClick={() => onlineStore.respondJoin(request.id, true)}>{online.pending === `request:${request.id}` ? "Saving…" : "Accept"}</Button><Button size="sm" variant="ghost" disabled={online.pending === `request:${request.id}`} onClick={() => onlineStore.respondJoin(request.id, false)}>Decline</Button></div>)}</div>}
-            {online.lobby.host_user_id === online.user.id && <div className="host-controls"><select aria-label="Lobby rules" value={online.lobby.rule_preset} onChange={event => onlineStore.updateLobby({ rule_preset:event.target.value, bot_difficulty:online.lobby!.bot_difficulty, is_public:online.lobby!.is_public, turn_seconds:online.lobby!.turn_seconds })}>{presets.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select aria-label="Lobby AI difficulty" value={online.lobby.bot_difficulty} onChange={event => onlineStore.updateLobby({ rule_preset:online.lobby!.rule_preset, bot_difficulty:event.target.value, is_public:online.lobby!.is_public, turn_seconds:online.lobby!.turn_seconds })}>{["easy","medium","hard"].map(level => <option key={level} value={level}>{level} AI</option>)}</select><select aria-label="Lobby turn timer" value={online.lobby.turn_seconds} onChange={event => onlineStore.updateLobby({ rule_preset:online.lobby!.rule_preset, bot_difficulty:online.lobby!.bot_difficulty, is_public:online.lobby!.is_public, turn_seconds:Number(event.target.value) })}>{[15,30,45,60].map(seconds => <option key={seconds} value={seconds}>{seconds}s turns</option>)}</select><button role="switch" aria-checked={online.lobby.is_public} onClick={() => onlineStore.updateLobby({ rule_preset:online.lobby!.rule_preset, bot_difficulty:online.lobby!.bot_difficulty, is_public:!online.lobby!.is_public, turn_seconds:online.lobby!.turn_seconds })}>{online.lobby.is_public ? "Public table" : "Private table"}</button></div>}
+            {online.lobby.host_user_id === online.user.id && <div className="host-controls"><select aria-label="Lobby rules" value={online.lobby.rule_preset} disabled={online.lobby.ranked} onChange={event => onlineStore.updateLobby({ rule_preset:event.target.value, bot_difficulty:online.lobby!.bot_difficulty, is_public:online.lobby!.is_public, turn_seconds:online.lobby!.turn_seconds })}>{presets.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select aria-label="Lobby AI difficulty" value={online.lobby.bot_difficulty} disabled={online.lobby.ranked} onChange={event => onlineStore.updateLobby({ rule_preset:online.lobby!.rule_preset, bot_difficulty:event.target.value, is_public:online.lobby!.is_public, turn_seconds:online.lobby!.turn_seconds })}>{["easy","medium","hard"].map(level => <option key={level} value={level}>{level} AI</option>)}</select><select aria-label="Lobby turn timer" value={online.lobby.turn_seconds} onChange={event => onlineStore.updateLobby({ rule_preset:online.lobby!.rule_preset, bot_difficulty:online.lobby!.bot_difficulty, is_public:online.lobby!.is_public, turn_seconds:Number(event.target.value) })}>{[15,30,45,60].map(seconds => <option key={seconds} value={seconds}>{seconds}s turns</option>)}</select><select aria-label="Rematch setting" value={online.lobby.rematch_mode} onChange={event => onlineStore.updateLobby({ rule_preset:online.lobby!.rule_preset, bot_difficulty:online.lobby!.bot_difficulty, is_public:online.lobby!.is_public, turn_seconds:online.lobby!.turn_seconds, rematch_mode:event.target.value })}><option value="vote">Rematch vote</option><option value="host">Host decides</option><option value="automatic">Quick rematch</option></select><button role="switch" aria-checked={online.lobby.is_public} disabled={online.lobby.ranked} onClick={() => onlineStore.updateLobby({ rule_preset:online.lobby!.rule_preset, bot_difficulty:online.lobby!.bot_difficulty, is_public:!online.lobby!.is_public, turn_seconds:online.lobby!.turn_seconds })}>{online.lobby.is_public ? "Public table" : "Private table"}</button></div>}
             <div className="lobby-actions">{online.lobby.host_user_id === online.user.id ? <><Button variant="secondary" onClick={() => setConfirmLeave(true)}>Transfer host / close</Button><Button size="lg" disabled={online.pending === "start" || online.lobby.seats.some(seat => !seat.is_bot && seat.user_id !== online.user!.id && !seat.ready)} onClick={() => onlineStore.startGame()}>{online.pending === "start" ? "Starting…" : "Start with this lineup"}</Button></> : <><Button variant="secondary" onClick={() => onlineStore.setReady(!online.lobby!.seats.find(seat => seat.user_id === online.user!.id)?.ready)}>{online.lobby.seats.find(seat => seat.user_id === online.user!.id)?.ready ? "Not ready" : "I'm ready"}</Button><Button variant="ghost" onClick={() => setConfirmLeave(true)}>Leave table</Button></>}</div>
           </div> : <div className="table-browser">
             <div className="browser-heading"><div><strong>Open tables</strong><small>Join friends or watch live games</small></div><Button size="icon" variant="ghost" onClick={() => onlineStore.listLobbies()} aria-label="Refresh tables"><RefreshCw /></Button></div>
@@ -177,7 +252,7 @@ function SetupScreen({ onLocal }: { onLocal: (setup: LocalSetup) => void }) {
               <span>{lobby.human_players}/4</span>
               {lobby.status === "playing" ? <Button size="sm" variant="secondary" onClick={() => onlineStore.spectate(lobby.id)}><Eye /> Watch</Button> : lobby.is_host ? <Button size="sm" disabled>Hosting</Button> : lobby.requested ? <Button size="sm" variant="ghost" onClick={() => onlineStore.cancelJoin(lobby.id)}>Cancel</Button> : <Button size="sm" variant="secondary" disabled={online.pending === `join:${lobby.id}`} onClick={() => onlineStore.requestJoin(lobby.id)}>{online.pending === `join:${lobby.id}` ? "Sending…" : "Request seat"}</Button>}
             </div>) : <div className="empty-tables"><Globe2 /><strong>No open tables yet</strong><span>Be the first host online.</span></div>}</div>
-            <div className="match-actions"><Button variant="secondary" onClick={() => onlineStore.quickMatch(preset,difficulty)}>Quick match</Button><div><input aria-label="Invite code" placeholder="Invite code" value={inviteCode} onChange={event => setInviteCode(event.target.value.toUpperCase())} maxLength={8}/><Button size="sm" onClick={() => onlineStore.joinByCode(inviteCode)}>Join invite</Button></div></div>
+            <div className="match-actions"><Button variant="secondary" onClick={() => onlineStore.quickMatch(preset,difficulty)}>Quick match</Button><Button variant="secondary" onClick={() => onlineStore.rankedMatch()}><Swords /> Ranked</Button><div><input aria-label="Invite code" placeholder="Invite code" value={inviteCode} onChange={event => setInviteCode(event.target.value.toUpperCase())} maxLength={8}/><Button size="sm" onClick={() => onlineStore.joinByCode(inviteCode)}>Join invite</Button></div></div>
             <div className="create-table">
               <div className="section-label"><span><Plus /></span><div><strong>Host a new table</strong><small>Three AI players fill empty seats</small></div></div>
               <label className="field-label">Table name<input value={tableName} onChange={e => setTableName(e.target.value)} placeholder={`${online.user.display_name}'s table`} maxLength={40} /></label>
@@ -253,13 +328,17 @@ function GameHeader({ platform, onlineActive, onLocal }: {
 }
 
 export default function App() {
-  const { model, starting, fatalError, platform } = useGameStore();
+  const { model, starting, fatalError, platform, resumeAvailable } = useGameStore();
   const online = useOnlineStore();
   const [confirmNew, setConfirmNew] = useState(false);
   const [inGame, setInGame] = useState(false);
   const [activeSetup, setActiveSetup] = useState<LocalSetup | null>(null);
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   const [chatText, setChatText] = useState("");
+  const [turnAnnouncement, setTurnAnnouncement] = useState<string | null>(null);
+  const [recentMoveKey, setRecentMoveKey] = useState<string | null>(null);
+  const [capturedKeys, setCapturedKeys] = useState<string[]>([]);
+  const [homeKey, setHomeKey] = useState<string | null>(null);
   const preferences = usePreferences();
   const previousModel = useRef<typeof model>(null);
 
@@ -273,9 +352,11 @@ export default function App() {
   const status = activeModel?.error ?? activeModel?.status ?? "";
   const turnStatus = !online.connected && online.model
     ? "Reconnecting — your game is safe"
+    : online.syncing && online.model
+      ? "Synchronizing the latest board…"
     : activeModel?.winner !== null && activeModel?.winner !== undefined
       ? `${activeModel.players.find(player => player.id === activeModel.winner)?.name ?? "A player"} wins!`
-      : activeModel?.busy
+      : activeModel?.busy || (Boolean(online.model) && !activeModel?.human_turn)
         ? "AI is thinking…"
         : online.model && current?.id !== online.player
           ? `Waiting for ${current?.name ?? "the next player"}`
@@ -308,18 +389,55 @@ export default function App() {
     if (!activeModel) return;
     const previous = previousModel.current;
     if (previous && activeModel.revision > previous.revision) {
+      const changed = activeModel.tokens.filter((token, index) =>
+        JSON.stringify(token.position) !== JSON.stringify(previous.tokens[index]?.position)
+      );
+      const moved = changed.find(token => {
+        const before = previous.tokens.find(item => item.player === token.player && item.token === token.token);
+        return before && token.position !== "Yard";
+      });
+      const captured = changed.filter(token => {
+        const before = previous.tokens.find(item => item.player === token.player && item.token === token.token);
+        return token.position === "Yard" && before?.position !== "Yard";
+      });
+      if (moved) {
+        const key = `${moved.player}:${moved.token}`;
+        setRecentMoveKey(key);
+        setHomeKey(moved.position === "Finished" ? key : null);
+        window.setTimeout(() => {
+          setRecentMoveKey(currentKey => currentKey === key ? null : currentKey);
+          setHomeKey(currentKey => currentKey === key ? null : currentKey);
+        }, 1_500);
+      }
+      if (captured.length) {
+        const keys = captured.map(token => `${token.player}:${token.token}`);
+        setCapturedKeys(keys);
+        window.setTimeout(() => setCapturedKeys([]), 1_100);
+      }
+      const previousPlayer = previous.players.find(player => player.active);
+      if (current?.id !== previousPlayer?.id && activeModel.winner === null) {
+        const message = `${current?.name ?? "Next player"}'s turn`;
+        setTurnAnnouncement(message);
+        window.setTimeout(() => setTurnAnnouncement(currentMessage =>
+          currentMessage === message ? null : currentMessage
+        ), 1_200);
+      }
       if (activeModel.winner !== null && previous.winner === null) {
         gameAudio.play("victory", preferences.sound);
+        if (navigator.vibrate) navigator.vibrate([70, 45, 120]);
       } else if (activeModel.dice !== previous.dice && activeModel.dice !== null) {
         gameAudio.play("roll", preferences.sound);
+        if (navigator.vibrate) navigator.vibrate(25);
       } else if (activeModel.tokens.some((token, index) =>
         token.position === "Yard" && previous.tokens[index]?.position !== "Yard"
       )) {
         gameAudio.play("capture", preferences.sound);
+        if (navigator.vibrate) navigator.vibrate([45, 35, 70]);
       } else if (activeModel.tokens.some((token, index) =>
         JSON.stringify(token.position) !== JSON.stringify(previous.tokens[index]?.position)
       )) {
         gameAudio.play("move", preferences.sound);
+        if (navigator.vibrate) navigator.vibrate(18);
       } else if (current?.id !== previous.players.find(player => player.active)?.id) {
         gameAudio.play("turn", preferences.sound);
       }
@@ -354,20 +472,24 @@ export default function App() {
   }
 
   if (!inGame && !online.model) {
-    return <SetupScreen onLocal={(setup) => {
-      setActiveSetup(setup);
-      void gameStore.dispatch({
-        NewGameWith: {
-          preset: setup.preset,
-          bot_difficulty: setup.botDifficulty
-        }
-      });
-      setInGame(true);
-    }} />;
+    return <SetupScreen
+      resumeAvailable={resumeAvailable}
+      onResume={() => setInGame(true)}
+      onLocal={(setup) => {
+        setActiveSetup(setup);
+        void gameStore.dispatch({
+          NewGameWith: {
+            preset: setup.preset,
+            bot_difficulty: setup.botDifficulty
+          }
+        });
+        setInGame(true);
+      }}
+    />;
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell theme-dice-${online.hub?.profile.selected_dice ?? "ivory"} theme-tokens-${online.hub?.profile.selected_tokens ?? "classic"}`}>
       <div className="ambient ambient-one" />
       <div className="ambient ambient-two" />
       <GameHeader platform={platform} onlineActive={Boolean(online.model)} onLocal={() => {
@@ -377,7 +499,15 @@ export default function App() {
 
       <div className="turn-banner" role="status" aria-live="polite">
         {online.spectating ? "Spectating live" : turnStatus}{secondsLeft !== null && activeModel.winner === null ? ` · ${secondsLeft}s` : ""}
+        {online.model && <span className={online.connected ? "connection-good" : "connection-wait"}>
+          {online.connected ? "Live" : "Offline"}
+        </span>}
       </div>
+      {turnAnnouncement && <div className="turn-transition" role="status">
+        <span className={`color-dot ${current?.color.toLowerCase()}`} />
+        {turnAnnouncement}
+      </div>}
+      {homeKey && <div className="home-celebration" role="status">Token home! <Crown /></div>}
       <section className="game-layout">
         <aside className="left-panel">
           <div className="panel-heading">
@@ -386,7 +516,7 @@ export default function App() {
           </div>
           <div className="player-list">
             {activeModel.players.map((player) => (
-              <PlayerCard key={player.id} player={player} />
+              <PlayerCard key={player.id} player={player} presence={online.presence[player.id]} />
             ))}
           </div>
           <div className="game-tip">
@@ -407,13 +537,17 @@ export default function App() {
         <section className="board-section">
           <div className="mobile-players">
             {activeModel.players.map((player) => (
-              <PlayerCard key={player.id} player={player} compact />
+              <PlayerCard key={player.id} player={player} compact presence={online.presence[player.id]} />
             ))}
           </div>
           <LudoBoard
             tokens={boardTokens}
             onSelect={handleTokenSelect}
             showSafeCells={preferences.safeHints}
+            animate={preferences.motion}
+            recentMoveKey={recentMoveKey}
+            capturedKeys={capturedKeys}
+            homeKey={homeKey}
           />
           <div className="mobile-status" aria-live="polite">{turnStatus} · {status}</div>
         </section>
@@ -425,7 +559,10 @@ export default function App() {
           </div>
           <div className="dice-stage">
             <div className="dice-light" />
-            <Dice value={activeModel.dice} busy={activeModel.busy} />
+            <Dice
+              value={activeModel.dice}
+              busy={activeModel.busy || (Boolean(online.model) && !activeModel.human_turn)}
+            />
           </div>
           <Button
             size="lg"
@@ -433,7 +570,7 @@ export default function App() {
             disabled={online.spectating || !activeModel.can_roll || Boolean(online.model && current?.id !== online.player)}
             onClick={handleRoll}
           >
-            {activeModel.busy
+            {activeModel.busy || (Boolean(online.model) && !activeModel.human_turn)
               ? <><Bot className="size-5" /> AI thinking…</>
               : activeModel.can_roll
                 ? "Roll dice"

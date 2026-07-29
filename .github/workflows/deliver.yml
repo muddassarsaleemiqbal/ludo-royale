@@ -136,6 +136,13 @@ jobs:
         run: |
           url=$(pnpm dlx vercel@latest deploy apps/client/dist --prod --yes --token="${{ secrets.VERCEL_TOKEN }}")
           echo "url=$url" >> "$GITHUB_OUTPUT"
+      - name: Production smoke check
+        run: |
+          for attempt in {1..30}; do
+            curl --fail --silent --show-error "${{ steps.deploy.outputs.url }}" | grep -q "Ludo Royale" && exit 0
+            sleep 2
+          done
+          exit 1
 
   publish:
     name: Version, tag, and publish

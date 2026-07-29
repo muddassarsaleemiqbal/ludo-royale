@@ -19,6 +19,8 @@ pub struct EffectId(pub u64);
 /// Input accepted from any user-interface adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UiAction {
+    /// Resume platform effects after restoring a persisted domain snapshot.
+    Resume,
     /// Start a new standard match.
     NewGame,
     /// Start a new local match with the selected rules and AI strength.
@@ -174,6 +176,7 @@ impl GameRuntime {
 
     fn apply_action(&mut self, action: UiAction) -> Result<Vec<RuntimeEffect>, RuntimeError> {
         match action {
+            UiAction::Resume => Ok(self.schedule_bot()),
             UiAction::NewGame => {
                 self.session
                     .restore(configured_state(RulePreset::Classic, BotDifficulty::Hard));
@@ -396,5 +399,54 @@ mod tests {
                 .filter(|player| player.player.controller == Controller::Bot)
                 .all(|player| player.player.bot_difficulty == BotDifficulty::Easy)
         );
+    }
+
+    #[test]
+    fn restored_bot_turn_reschedules_automatic_play() {
+        let mut runtime = GameRuntime::standard();
+        let roll = runtime
+            .dispatch(UiAction::Roll)
+            .unwrap_or_else(|_| std::process::abort());
+        let RuntimeEffect::GenerateDice { effect } = roll.effects[0] else {
+            std::process::abort();
+        };
+        runtime
+            .dispatch(UiAction::DiceReady {
+                effect,
+                value: DiceValue::new(6).unwrap_or_else(|| std::process::abort()),
+            })
+            .unwrap_or_else(|_| std::process::abort());
+        runtime
+            .dispatch(UiAction::SelectToken(
+                TokenId::new(0).unwrap_or_else(|| std::process::abort()),
+            ))
+            .unwrap_or_else(|_| std::process::abort());
+        let roll = runtime
+            .dispatch(UiAction::Roll)
+            .unwrap_or_else(|_| std::process::abort());
+        let RuntimeEffect::GenerateDice { effect } = roll.effects[0] else {
+            std::process::abort();
+        };
+        runtime
+            .dispatch(UiAction::DiceReady {
+                effect,
+                value: DiceValue::new(1).unwrap_or_else(|| std::process::abort()),
+            })
+            .unwrap_or_else(|_| std::process::abort());
+        runtime
+            .dispatch(UiAction::SelectToken(
+                TokenId::new(0).unwrap_or_else(|| std::process::abort()),
+            ))
+            .unwrap_or_else(|_| std::process::abort());
+
+        let mut restored = GameRuntime::from_state(runtime.state().clone());
+        let update = restored
+            .dispatch(UiAction::Resume)
+            .unwrap_or_else(|_| std::process::abort());
+
+        assert!(matches!(
+            update.effects.as_slice(),
+            [RuntimeEffect::DelayBot { .. }]
+        ));
     }
 }

@@ -66,6 +66,16 @@ export class WasmGameClient implements GameClient {
     return ((values[0] ?? 0) % 6) + 1;
   }
 
+  async serialize() {
+    if (!this.game) throw new Error("WASM game has not initialized");
+    return this.game.state_json();
+  }
+
+  async restore(snapshot: string) {
+    if (!this.game) throw new Error("WASM game has not initialized");
+    return JSON.parse(this.game.restore_json(snapshot)) as GameViewModel;
+  }
+
   close() {
     this.worker?.terminate();
     this.workerRequests.clear();
@@ -93,6 +103,14 @@ export class TauriGameClient implements GameClient {
 
   randomDice() {
     return this.invoke<number>("random_dice");
+  }
+
+  serialize() {
+    return this.invoke<string>("state_json");
+  }
+
+  restore(snapshot: string) {
+    return this.invoke<GameViewModel>("restore_state", { snapshot });
   }
 
   close() {}

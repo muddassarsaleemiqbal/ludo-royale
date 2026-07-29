@@ -752,6 +752,21 @@ impl GameState {
             .collect()
     }
 
+    /// Calculates the authoritative destination for one token and dice value.
+    ///
+    /// This is useful for previews: it applies the same home, blockade, and
+    /// overshoot rules as an actual move without mutating the match.
+    #[must_use]
+    pub fn token_destination(
+        &self,
+        player: PlayerId,
+        token: TokenId,
+        dice: DiceValue,
+    ) -> Option<TokenPosition> {
+        let state = self.players.get(player.index())?;
+        self.destination(player, state.tokens.get(token.index())?.position, dice)
+    }
+
     /// Whether a global shared-track index is protected by the active rules.
     #[must_use]
     pub fn is_safe_track_index(&self, global: u8) -> bool {

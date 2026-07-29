@@ -5,7 +5,7 @@
   "identifier": "dev.ludo.royale",
   "build": {
     "beforeDevCommand": "pnpm --dir ../client dev",
-    "beforeBuildCommand": "node ../../scripts/build-web.mjs",
+    "beforeBuildCommand": "node ../../scripts/build-web.mjs --require-api-url",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../../client/dist"
   },

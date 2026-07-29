@@ -1,8 +1,8 @@
 //! GUI-neutral view models.
 
 use ludo_domain::{
-    Controller, GameEvent, GameState, GameStatus, PlayerColor, PlayerId, TokenId, TokenPosition,
-    TurnPhase,
+    Controller, DiceValue, GameEvent, GameState, GameStatus, PlayerColor, PlayerId, TokenId,
+    TokenPosition, TurnPhase,
 };
 use serde::{Deserialize, Serialize};
 
@@ -149,6 +149,8 @@ pub struct TokenViewModel {
     pub position: TokenPosition,
     /// Whether the token is an available user action.
     pub selectable: bool,
+    /// Authoritative landing position when this token is currently legal.
+    pub preview: Option<TokenPosition>,
 }
 
 /// One player card prepared for rendering.
@@ -160,6 +162,8 @@ pub struct PlayerViewModel {
     pub name: String,
     /// Board color.
     pub color: PlayerColor,
+    /// Whether this seat is controlled by a human.
+    pub human: bool,
     /// Whether this is the current turn.
     pub active: bool,
     /// Number of completed tokens.
@@ -209,6 +213,7 @@ impl From<&GameState> for GameViewModel {
                 id: player.player.id,
                 name: player.player.name.clone(),
                 color: player.player.color,
+                human: matches!(player.player.controller, Controller::Human),
                 active: player.player.id == current,
                 finished: player
                     .tokens
@@ -227,6 +232,11 @@ impl From<&GameState> for GameViewModel {
                     color: player.player.color,
                     position: token.position,
                     selectable: player.player.id == current && legal.contains(&token.id),
+                    preview: dice.and_then(|value| {
+                        DiceValue::new(value).and_then(|value| {
+                            state.token_destination(player.player.id, token.id, value)
+                        })
+                    }),
                 })
             })
             .collect();
@@ -379,6 +389,27 @@ mod tests {
                 AnimationCue::Turn(opponent),
                 AnimationCue::Victory(player),
             ]
+        );
+    }
+
+    #[test]
+    fn selectable_tokens_include_the_authoritative_landing_preview() {
+        let mut state = GameState::new(standard_players(), Rules::default())
+            .unwrap_or_else(|_| std::process::abort());
+        state
+            .apply(GameCommand::Roll(
+                DiceValue::new(6).unwrap_or_else(|| std::process::abort()),
+            ))
+            .unwrap_or_else(|_| std::process::abort());
+
+        let model = GameViewModel::from(&state);
+
+        assert!(
+            model
+                .tokens
+                .iter()
+                .filter(|token| token.selectable)
+                .all(|token| token.preview == Some(TokenPosition::Path(0)))
         );
     }
 }

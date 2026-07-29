@@ -13,6 +13,7 @@ export type Lobby = {
   id: string; name: string; host_user_id: string; rule_preset: string;
   bot_difficulty: string; status: string;
   invite_code: string; is_public: boolean; turn_seconds: number; spectator_count: number;
+  ranked: boolean; rematch_mode: "vote" | "host" | "automatic";
   seats: {
     seat: number; user_id: string | null; name: string; is_bot: boolean;
     ready: boolean; presence: "online" | "reconnecting" | "offline" | "bot";
@@ -20,6 +21,32 @@ export type Lobby = {
   requests: { id: string; user_id: string; display_name: string }[];
 };
 export type Activity = { id: number; kind: string; message: string; created_at: string };
+export type SocialPlayer = {
+  user_id: string; display_name: string; level: number; rating: number;
+  relationship: "friend" | "incoming" | "outgoing" | "none";
+  presence: "online" | "offline";
+};
+export type PlayerHub = {
+  profile: {
+    user_id: string; display_name: string; xp: number; level: number; matches: number;
+    wins: number; current_streak: number; best_streak: number; rating: number;
+    selected_dice: string; selected_tokens: string;
+  };
+  friends: SocialPlayer[];
+  matches: {
+    id: string; played_at: string; placement: number; xp_earned: number;
+    rating_delta: number; ranked: boolean; opponents: string[];
+  }[];
+  achievements: string[];
+  challenges: {
+    key: string; title: string; progress: number; target: number; reward: number; claimed: boolean;
+  }[];
+  leaderboard: {
+    rank: number; user_id: string; display_name: string; rating: number; matches: number; wins: number;
+  }[];
+  season_name: string; season_ends_at: string;
+  invites: { id: string; lobby_id: string; lobby_name: string; sender_name: string }[];
+};
 type Snapshot = {
   user: User | null; model: GameViewModel | null; lobbyId: string | null;
   player: number | null; connected: boolean; realtimeConnected: boolean;
@@ -29,14 +56,25 @@ type Snapshot = {
   rulePreset: string | null;
   botDifficulty: string | null;
   turnDeadline: number | null;
+  syncing: boolean;
+  lastSyncedAt: number | null;
   events: Activity[];
   spectating: boolean;
   rematchVotes: { votes: number; needed: number } | null;
+  configurationError: string | null;
+  hub: PlayerHub | null;
+  playerSearch: SocialPlayer[];
+  replay: { matchId: string; frames: GameViewModel[] } | null;
+  presence: Record<number, "online" | "reconnecting" | "offline">;
 };
 type ServerMessage =
-  | { type: "ready"; user: User }
+  | { type: "ready"; user: User; protocol_version: number }
   | { type: "lobby_list"; lobbies: LobbySummary[] }
   | { type: "lobby"; lobby: Lobby }
+  | { type: "hub"; hub: PlayerHub }
+  | { type: "search_results"; players: SocialPlayer[] }
+  | { type: "replay"; match_id: string; frames: GameViewModel[] }
+  | { type: "presence"; lobby_id: string; seats: Lobby["seats"] }
   | { type: "join_requested"; lobby_id: string }
   | { type: "join_decision"; lobby_id: string; accepted: boolean }
   | { type: "game_started"; lobby_id: string; player: number; model: GameViewModel; turn_seconds: number }
@@ -46,13 +84,34 @@ type ServerMessage =
   | { type: "feed"; lobby_id: string; events: Activity[] }
   | { type: "rematch_update"; lobby_id: string; votes: number; needed: number }
   | { type: "ack"; command_id: string }
+  | { type: "pong" }
   | {
       type: "error"; command_id: string | null; code: string;
       message: string; recoverable: boolean
     };
 
-const api = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "")
-  ?? "http://localhost:8080";
+function resolveApiUrl() {
+  const configured = (import.meta.env.VITE_API_URL as string | undefined)?.trim();
+  const candidate = configured || (import.meta.env.DEV ? "http://localhost:8080" : "");
+  if (!candidate) return {
+    api: null,
+    error: "Online play is not configured in this build. Install a release built with the public multiplayer server URL."
+  };
+  try {
+    const url = new URL(candidate);
+    const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+    if (!["http:", "https:"].includes(url.protocol) || (import.meta.env.PROD && !local && url.protocol !== "https:"))
+      throw new Error("Production multiplayer requires HTTPS");
+    return { api: url.toString().replace(/\/$/, ""), error: null };
+  } catch {
+    return {
+      api: null,
+      error: "This build contains an invalid multiplayer server URL. Please install a correctly configured release."
+    };
+  }
+}
+const serverConfig = resolveApiUrl();
+const api = serverConfig.api;
 const tokenKey = "ludo-online-token";
 const lobbyKey = "ludo-online-lobby";
 const spectatorKey = "ludo-online-spectator";
@@ -63,6 +122,7 @@ class OnlineStore {
   private ably: Realtime | null = null;
   private token = localStorage.getItem(tokenKey);
   private reconnectTimer: number | null = null;
+  private heartbeatTimer: number | null = null;
   private reconnectAttempt = 0;
   private commands = new Map<string, string | null>();
   private snapshot: Snapshot = {
@@ -70,7 +130,10 @@ class OnlineStore {
     connected: false, realtimeConnected: false, lobbies: [], lobby: null,
     error: null, pending: null
     , toast: null, rulePreset: null, botDifficulty: null, turnDeadline: null,
-    events: [], spectating: localStorage.getItem(spectatorKey) === "true", rematchVotes: null
+    syncing: false, lastSyncedAt: null,
+    events: [], spectating: localStorage.getItem(spectatorKey) === "true", rematchVotes: null,
+    configurationError: serverConfig.error
+    , hub: null, playerSearch: [], replay: null, presence: {}
   };
 
   subscribe = (listener: () => void) => {
@@ -81,6 +144,10 @@ class OnlineStore {
 
   async restore() {
     if (!this.token || this.snapshot.user) return;
+    if (!api) {
+      this.set({ error: serverConfig.error });
+      return;
+    }
     try {
       const response = await fetch(`${api}/api/me`, {
         headers: { Authorization: `Bearer ${this.token}` }
@@ -100,6 +167,11 @@ class OnlineStore {
     password: string,
     displayName: string
   ) {
+    if (!api) {
+      const error = new Error(serverConfig.error ?? "Online play is unavailable");
+      this.set({ pending: null, error: error.message });
+      throw error;
+    }
     this.set({ pending: "auth", error: null });
     try {
       const response = await fetch(`${api}/api/auth/${kind}`, {
@@ -127,6 +199,38 @@ class OnlineStore {
   clearError() { this.set({ error: null }); }
   clearToast() { this.set({ toast: null }); }
   listLobbies() { this.send({ type: "list_lobbies" }); }
+  getHub() { this.send({ type: "get_hub" }); }
+  searchPlayers(query: string) { this.send({ type: "search_players", query }); }
+  sendFriendRequest(userId: string) {
+    this.command(`friend:${userId}`, { type: "send_friend_request", user_id: userId });
+  }
+  respondFriendRequest(userId: string, accept: boolean) {
+    this.command(`friend:${userId}`, { type: "respond_friend_request", user_id: userId, accept });
+  }
+  removeFriend(userId: string) {
+    this.command(`friend:${userId}`, { type: "remove_friend", user_id: userId });
+  }
+  inviteFriend(userId: string) {
+    if (this.snapshot.lobby)
+      this.command(`invite-friend:${userId}`, {
+        type: "invite_friend", lobby_id: this.snapshot.lobby.id, user_id: userId
+      });
+  }
+  respondFriendInvite(inviteId: string, accept: boolean) {
+    this.command(`friend-invite:${inviteId}`, {
+      type: "respond_friend_invite", invite_id: inviteId, accept
+    });
+  }
+  setCosmetics(diceTheme: string, tokenTheme: string) {
+    this.command("cosmetics", {
+      type: "set_cosmetics", dice_theme: diceTheme, token_theme: tokenTheme
+    });
+  }
+  rankedMatch() { this.command("ranked", { type: "ranked_match" }); }
+  getReplay(matchId: string) {
+    this.command(`replay:${matchId}`, { type: "get_replay", match_id: matchId });
+  }
+  closeReplay() { this.set({ replay: null }); }
   createLobby(options: {
     name: string; rule_preset: string; bot_difficulty: string; is_public: boolean;
     turn_seconds: number
@@ -167,11 +271,13 @@ class OnlineStore {
       });
   }
   updateLobby(options: {
-    rule_preset: string; bot_difficulty: string; is_public: boolean; turn_seconds: number
+    rule_preset: string; bot_difficulty: string; is_public: boolean; turn_seconds: number;
+    rematch_mode?: string
   }) {
     if (this.snapshot.lobby)
       this.command("settings", {
-        type: "update_lobby", lobby_id: this.snapshot.lobby.id, ...options
+        type: "update_lobby", lobby_id: this.snapshot.lobby.id,
+        rematch_mode: options.rematch_mode ?? this.snapshot.lobby.rematch_mode, ...options
       });
   }
   quickMatch(rulePreset: string, botDifficulty: string) {
@@ -194,11 +300,23 @@ class OnlineStore {
     if (this.snapshot.lobbyId)
       this.command("rematch", { type: "vote_rematch", lobby_id: this.snapshot.lobbyId });
   }
+  resync() {
+    if (!this.snapshot.lobbyId) return;
+    this.set({ syncing: true, error: null });
+    if (!this.send({ type: "sync", lobby_id: this.snapshot.lobbyId }))
+      this.set({ syncing: false });
+  }
   async copyInvite() {
     const code = this.snapshot.lobby?.invite_code;
     if (!code) return;
     const url = new URL(location.href);
     url.searchParams.set("invite", code);
+    const share = { title: "Join my Ludo game", text: "Take a seat at my Ludo table.", url: url.toString() };
+    if (navigator.share && navigator.canShare?.(share)) {
+      await navigator.share(share);
+      this.set({ toast: "Invite shared." });
+      return;
+    }
     await navigator.clipboard.writeText(url.toString());
     this.set({ toast: "Invite link copied." });
   }
@@ -235,7 +353,7 @@ class OnlineStore {
   }
 
   private connect() {
-    if (!this.token || this.socket?.readyState === WebSocket.OPEN
+    if (!api || !this.token || this.socket?.readyState === WebSocket.OPEN
       || this.socket?.readyState === WebSocket.CONNECTING) return;
     if (this.reconnectTimer !== null) {
       window.clearTimeout(this.reconnectTimer);
@@ -247,8 +365,12 @@ class OnlineStore {
     this.socket = new WebSocket(url, ["ludo", this.token]);
     this.socket.onopen = () => {
       this.reconnectAttempt = 0;
-      this.set({ connected: true, error: null });
+      this.set({ connected: true, error: null, syncing: Boolean(this.snapshot.lobbyId) });
       this.connectAbly();
+      if (this.heartbeatTimer !== null) window.clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = window.setInterval(() => {
+        if (this.socket?.readyState === WebSocket.OPEN) this.send({ type: "ping" });
+      }, 15_000);
       if (this.snapshot.lobbyId)
         this.send({
           type: this.snapshot.spectating ? "spectate" : "sync",
@@ -263,8 +385,10 @@ class OnlineStore {
       }
     };
     this.socket.onclose = () => {
+      if (this.heartbeatTimer !== null) window.clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
       this.socket = null;
-      this.set({ connected: false, pending: null });
+      this.set({ connected: false, pending: null, syncing: Boolean(this.snapshot.lobbyId) });
       if (!this.token) return;
       const delay = Math.min(15_000, 1_000 * 2 ** this.reconnectAttempt);
       this.reconnectAttempt = Math.min(this.reconnectAttempt + 1, 4);
@@ -284,7 +408,7 @@ class OnlineStore {
   }
 
   private connectAbly() {
-    if (!this.token || !this.snapshot.user || this.ably) return;
+    if (!api || !this.token || !this.snapshot.user || this.ably) return;
     const authToken = this.token;
     this.ably = new Realtime({
       clientId: this.snapshot.user.id,
@@ -318,7 +442,7 @@ class OnlineStore {
 
   private handleMessage(value: unknown) {
     if (!isServerMessage(value)) return;
-    if (value.type === "ready") return;
+    if (value.type === "ready" || value.type === "pong") return;
     if (value.type === "ack") {
       this.commands.delete(value.command_id);
       if (this.commands.size === 0) this.set({ pending: null });
@@ -338,6 +462,26 @@ class OnlineStore {
       } else {
         this.set({ lobby: value.lobby, pending: null, error: null });
       }
+      return;
+    }
+    if (value.type === "hub") {
+      this.set({ hub: value.hub, pending: null });
+      return;
+    }
+    if (value.type === "search_results") {
+      this.set({ playerSearch: value.players });
+      return;
+    }
+    if (value.type === "replay") {
+      this.set({ replay: { matchId: value.match_id, frames: value.frames }, pending: null });
+      return;
+    }
+    if (value.type === "presence") {
+      if (this.snapshot.lobbyId && value.lobby_id !== this.snapshot.lobbyId) return;
+      this.set({
+        presence: Object.fromEntries(value.seats.filter(seat => seat.presence !== "bot")
+          .map(seat => [seat.seat, seat.presence])) as Snapshot["presence"]
+      });
       return;
     }
     if (value.type === "join_requested") {
@@ -361,7 +505,7 @@ class OnlineStore {
         rulePreset: this.snapshot.lobby?.rule_preset ?? this.snapshot.rulePreset,
         botDifficulty: this.snapshot.lobby?.bot_difficulty ?? this.snapshot.botDifficulty,
         turnDeadline: Date.now() + value.turn_seconds * 1000,
-        spectating: false, events: []
+        spectating: false, events: [], syncing: false, lastSyncedAt: Date.now()
       });
       return;
     }
@@ -370,7 +514,8 @@ class OnlineStore {
       if (this.snapshot.model && value.model.revision < this.snapshot.model.revision) return;
       this.set({
         model: value.model, pending: null, error: null,
-        turnDeadline: Date.now() + value.turn_seconds * 1000
+        turnDeadline: Date.now() + value.turn_seconds * 1000,
+        syncing: false, lastSyncedAt: Date.now()
       });
       return;
     }
@@ -380,7 +525,8 @@ class OnlineStore {
       this.set({
         lobby: null, lobbyId: value.lobby_id, player: null, model: value.model,
         spectating: true, events: [], pending: null, error: null,
-        turnDeadline: Date.now() + value.turn_seconds * 1000
+        turnDeadline: Date.now() + value.turn_seconds * 1000,
+        syncing: false, lastSyncedAt: Date.now()
       });
       return;
     }
@@ -399,8 +545,7 @@ class OnlineStore {
     }
     if (value.command_id) this.commands.delete(value.command_id);
     this.set({ error: value.message, pending: this.commands.size === 0 ? null : this.snapshot.pending });
-    if (value.code === "stale_revision" && this.snapshot.lobbyId)
-      this.send({ type: "sync", lobby_id: this.snapshot.lobbyId });
+    if (value.code === "stale_revision" && this.snapshot.lobbyId) this.resync();
     if (value.code === "game_not_found") {
       localStorage.removeItem(lobbyKey);
       this.set({ lobbyId: null, model: null, player: null });
@@ -418,12 +563,16 @@ class OnlineStore {
     }
     const commandId = crypto.randomUUID();
     this.commands.set(commandId, pending);
-    this.socket.send(JSON.stringify({ command_id: commandId, ...value as object }));
+    this.socket.send(JSON.stringify({
+      command_id: commandId, protocol_version: 1, ...value as object
+    }));
     return true;
   }
   private resetSession() {
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
+    if (this.heartbeatTimer !== null) window.clearInterval(this.heartbeatTimer);
     this.reconnectTimer = null;
+    this.heartbeatTimer = null;
     this.socket?.close();
     this.socket = null;
     this.ably?.close();
@@ -437,7 +586,9 @@ class OnlineStore {
       user: null, model: null, lobbyId: null, player: null, connected: false,
       realtimeConnected: false, lobbies: [], lobby: null, error: null, pending: null
       , toast: null, rulePreset: null, botDifficulty: null, turnDeadline: null,
-      events: [], spectating: false, rematchVotes: null
+      syncing: false, lastSyncedAt: null,
+      events: [], spectating: false, rematchVotes: null,
+      configurationError: serverConfig.error, hub: null, playerSearch: [], replay: null, presence: {}
     };
     this.emit();
   }
@@ -453,6 +604,8 @@ function isServerMessage(value: unknown): value is ServerMessage {
     && "type" in value && typeof value.type === "string";
 }
 function messageFrom(error: unknown) {
+  if (error instanceof TypeError && /fetch|network|load/i.test(error.message))
+    return "Could not reach the multiplayer server. Check your internet connection or install the latest configured release.";
   return error instanceof Error ? error.message : String(error);
 }
 

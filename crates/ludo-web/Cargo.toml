@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 ludo-ai = { path = "../ludo-ai", default-features = false }
+ludo-domain = { path = "../ludo-domain" }
 ludo-runtime = { path = "../ludo-runtime" }
 serde_json.workspace = true
 wasm-bindgen.workspace = true

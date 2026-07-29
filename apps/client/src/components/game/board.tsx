@@ -1,5 +1,5 @@
-import { memo, useMemo } from "react";
-import { ShieldCheck } from "lucide-react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Flag, ShieldCheck } from "lucide-react";
 import { cn } from "../../lib/cn";
 import type {
   PlayerColor,
@@ -61,42 +61,109 @@ function cellKind(row: number, column: number) {
 
 const BoardToken = memo(function BoardToken({
   token,
-  onSelect
+  onSelect,
+  isRecent,
+  isCaptured,
+  reachedHome
 }: {
   token: TokenViewModel;
   onSelect(token: number): void;
+  isRecent: boolean;
+  isCaptured: boolean;
+  reachedHome: boolean;
 }) {
   const point = coordinate(token.color, token.token, token.position);
+  const preview = token.preview ? coordinate(token.color, token.token, token.preview) : null;
   if (!point) return null;
   return (
-    <button
-      className={cn(
-        "game-token",
-        `token-${token.color.toLowerCase()}`,
-        token.selectable && "is-selectable"
+    <>
+      {token.selectable && preview && (
+        <span
+          className={`move-preview preview-${token.color.toLowerCase()}`}
+          style={{
+            "--token-row": preview[0],
+            "--token-column": preview[1]
+          } as React.CSSProperties}
+          aria-hidden="true"
+        >
+          <Flag />
+        </span>
       )}
-      style={{
-        "--token-row": point[0],
-        "--token-column": point[1]
-      } as React.CSSProperties}
-      disabled={!token.selectable}
-      onClick={() => onSelect(token.token)}
-      aria-label={`Move ${token.color} token ${token.token + 1}`}
-    >
-      <span>{token.token + 1}</span>
-    </button>
+      <button
+        className={cn(
+          "game-token",
+          `token-${token.color.toLowerCase()}`,
+          token.selectable && "is-selectable",
+          isRecent && "is-recent",
+          isCaptured && "is-captured",
+          reachedHome && "reached-home"
+        )}
+        style={{
+          "--token-row": point[0],
+          "--token-column": point[1]
+        } as React.CSSProperties}
+        disabled={!token.selectable}
+        onClick={() => onSelect(token.token)}
+        aria-label={`Move ${token.color} token ${token.token + 1}${token.preview ? " to the highlighted square" : ""}`}
+      >
+        <span>{token.token + 1}</span>
+      </button>
+    </>
   );
 });
 
 export const LudoBoard = memo(function LudoBoard({
   tokens,
   onSelect,
-  showSafeCells = true
+  showSafeCells = true,
+  animate = true,
+  recentMoveKey = null,
+  capturedKeys = [],
+  homeKey = null
 }: {
   tokens: TokenViewModel[];
   onSelect(token: number): void;
   showSafeCells?: boolean;
+  animate?: boolean;
+  recentMoveKey?: string | null;
+  capturedKeys?: string[];
+  homeKey?: string | null;
 }) {
+  const [displayPositions, setDisplayPositions] = useState<Record<string, TokenPosition>>({});
+  const previousTokens = useRef(tokens);
+  useEffect(() => {
+    const timers: number[] = [];
+    const previous = previousTokens.current;
+    const nextPositions: Record<string, TokenPosition> = {};
+    for (const token of tokens) {
+      const key = `${token.player}:${token.token}`;
+      const before = previous.find(item => item.player === token.player && item.token === token.token);
+      if (
+        animate &&
+        before &&
+        typeof before.position === "object" &&
+        typeof token.position === "object" &&
+        token.position.Path > before.position.Path
+      ) {
+        const distance = token.position.Path - before.position.Path;
+        for (let step = 1; step <= distance; step += 1) {
+          const position: TokenPosition = { Path: before.position.Path + step };
+          timers.push(window.setTimeout(() => {
+            setDisplayPositions(current => ({ ...current, [key]: position }));
+          }, Math.min(step, 10) * 58));
+        }
+      } else {
+        nextPositions[key] = token.position;
+      }
+    }
+    setDisplayPositions(current => ({ ...current, ...nextPositions }));
+    previousTokens.current = tokens;
+    return () => timers.forEach(timer => window.clearTimeout(timer));
+  }, [animate, tokens]);
+  const displayTokens = useMemo(() => tokens.map(token => ({
+    ...token,
+    position: displayPositions[`${token.player}:${token.token}`] ?? token.position
+  })), [displayPositions, tokens]);
   const cells = useMemo(() => Array.from({ length: 225 }, (_, index) => {
     const row = Math.floor(index / 15);
     const column = index % 15;
@@ -118,11 +185,14 @@ export const LudoBoard = memo(function LudoBoard({
       <div className="ludo-board" role="group" aria-label="Ludo board. Shield symbols mark safe cells.">
         {cells}
         <div className="home-crown" aria-hidden="true">♛</div>
-        {tokens.map((token) => (
+        {displayTokens.map((token) => (
           <BoardToken
             key={`${token.player}-${token.token}`}
             token={token}
             onSelect={onSelect}
+            isRecent={recentMoveKey === `${token.player}:${token.token}`}
+            isCaptured={capturedKeys.includes(`${token.player}:${token.token}`)}
+            reachedHome={homeKey === `${token.player}:${token.token}`}
           />
         ))}
       </div>

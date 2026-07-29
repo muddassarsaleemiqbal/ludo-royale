@@ -72,14 +72,21 @@ Waiting rooms with no recently connected members are removed automatically.
 
 For local development, the client defaults to `http://localhost:8080`. For
 production, deploy the `ludo-server` Rust binary with a PostgreSQL
-`DATABASE_URL`, set `LUDO_ALLOWED_ORIGINS` to the Vercel URL, and define the
-GitHub Actions repository variable `LUDO_API_URL` with the public HTTPS server
-URL. CI embeds that URL as `VITE_API_URL` in the single web artifact reused by
-Vercel and desktop installers.
+`DATABASE_URL`, set `LUDO_ALLOWED_ORIGINS` to the web URL plus
+`tauri://localhost,http://tauri.localhost,https://tauri.localhost`, and define
+the GitHub Actions repository variable `LUDO_API_URL` with the public HTTPS
+server URL (for example, the Railway service domain without a trailing slash).
+CI embeds that URL as `VITE_API_URL` in the single web artifact reused by
+Vercel and desktop installers. Production builds now fail when that variable is
+missing or invalid instead of silently shipping desktop multiplayer pointed at
+localhost.
 
 ## Project structure
 
 For a deeper walkthrough of the architecture, platform behavior, and runtime flow, see [HOW-THE-APP-WORKS.md](HOW-THE-APP-WORKS.md).
+Production health checks, metrics, backups, restore drills, feature flags,
+privacy workflows, load tests, and incident procedures are documented in
+[docs/operations.md](docs/operations.md).
 
 ## Quality checks
 

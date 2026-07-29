@@ -4,12 +4,14 @@ import type { PlayerViewModel } from "../../game/types";
 
 export function PlayerCard({
   player,
-  compact = false
+  compact = false,
+  presence
 }: {
   player: PlayerViewModel;
   compact?: boolean;
+  presence?: "online" | "reconnecting" | "offline";
 }) {
-  const bot = player.id !== 0;
+  const bot = !player.human;
   return (
     <article
       className={cn(
@@ -28,7 +30,7 @@ export function PlayerCard({
           <strong className="truncate">{player.name}</strong>
           {player.finished === 4 && <Crown className="size-3.5 text-amber-300" />}
         </div>
-        <span>{player.active ? "Playing now" : bot ? "AI player" : "Ready"}</span>
+        <span>{player.active ? (bot ? "AI is playing" : "Playing now") : bot ? "AI player" : presence ? `${presence.charAt(0).toUpperCase()}${presence.slice(1)}` : "Human player"}</span>
       </div>
       <div className="home-count">
         <b>{player.finished}</b>

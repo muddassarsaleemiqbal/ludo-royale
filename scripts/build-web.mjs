@@ -5,6 +5,23 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const wasmOutput = resolve(repoRoot, "apps/client/src/wasm/pkg");
+
+if (process.argv.includes("--require-api-url")) {
+  const configured = process.env.VITE_API_URL?.trim();
+  if (!configured) {
+    console.error("VITE_API_URL must be set for production web and desktop builds.");
+    process.exit(1);
+  }
+  try {
+    const url = new URL(configured);
+    const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+    if (!["http:", "https:"].includes(url.protocol) || (!local && url.protocol !== "https:"))
+      throw new Error("public endpoints must use HTTPS");
+  } catch (error) {
+    console.error(`VITE_API_URL is invalid: ${error instanceof Error ? error.message : error}`);
+    process.exit(1);
+  }
+}
 function run(command, args) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
