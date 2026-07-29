@@ -18,6 +18,9 @@ env:
   CARGO_TERM_COLOR: always
   CI_RUN_ID: ${{ github.event.workflow_run.id }}
   CI_SHA: ${{ github.event.workflow_run.head_sha }}
+  PNPM_VERSION: "11.17.0"
+  NODE_VERSION: "22"
+  VERCEL_CLI_VERSION: "58.1.0"
 
 jobs:
   prepare:
@@ -79,14 +82,14 @@ jobs:
           path: apps/client/dist
           github-token: ${{ github.token }}
           run-id: ${{ env.CI_RUN_ID }}
-      - uses: pnpm/action-setup@v4
+      - uses: ./.github/actions/setup-node-pnpm
         with:
-          version: 11.17.0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: apps/tauri/pnpm-lock.yaml
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          lockfile: apps/tauri/pnpm-lock.yaml
+      - name: Verify web artifact provenance
+        shell: bash
+        run: node scripts/ops/artifact-manifest.mjs verify apps/client/dist "$CI_SHA"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.1
@@ -111,48 +114,67 @@ jobs:
     if: needs.prepare.outputs.skip != 'true'
     name: Vercel production
     runs-on: ubuntu-24.04
+    outputs:
+      deployment_url: ${{ steps.deploy.outputs.url }}
     env:
       PRODUCTION_WEB_URL: https://ludo-six-pink.vercel.app
     environment:
       name: production
       url: ${{ env.PRODUCTION_WEB_URL }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.CI_SHA }}
       - uses: actions/download-artifact@v8
         with:
           name: web-dist
           path: apps/client/dist
           github-token: ${{ github.token }}
           run-id: ${{ env.CI_RUN_ID }}
-      - uses: pnpm/action-setup@v4
+      - uses: ./.github/actions/setup-node-pnpm
         with:
-          version: 11.17.0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          package-manager-cache: false
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          lockfile: apps/client/pnpm-lock.yaml
+      - name: Verify web artifact provenance
+        run: node scripts/ops/artifact-manifest.mjs verify apps/client/dist "$CI_SHA"
       - name: Deploy the verified CI artifact
         id: deploy
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
-          url=$(pnpm dlx vercel@latest deploy apps/client/dist --prod --yes --token="${{ secrets.VERCEL_TOKEN }}")
+          url=$(pnpm dlx "vercel@$VERCEL_CLI_VERSION" deploy \
+            apps/client/dist \
+            --prod \
+            --yes \
+            --token="${{ secrets.VERCEL_TOKEN }}")
           echo "url=$url" >> "$GITHUB_OUTPUT"
       - name: Production smoke check
         run: |
           set -euo pipefail
           for attempt in {1..30}; do
-            if curl --fail --silent --show-error \
-              --max-time 15 \
-              "$PRODUCTION_WEB_URL/" |
-              grep -q "Ludo Royale"; then
-              echo "Production is healthy at $PRODUCTION_WEB_URL"
-              exit 0
+            if html=$(curl --fail --silent --show-error --max-time 15 "$PRODUCTION_WEB_URL/") &&
+              provenance=$(curl --fail --silent --show-error \
+                --max-time 15 \
+                "$PRODUCTION_WEB_URL/build-provenance.json"); then
+              deployed_sha=$(node -e '
+                const chunks = [];
+                process.stdin.on("data", chunk => chunks.push(chunk));
+                process.stdin.on("end", () => {
+                  const value = JSON.parse(Buffer.concat(chunks));
+                  process.stdout.write(String(value.source_sha ?? ""));
+                });
+              ' <<<"$provenance")
+              if grep -q "Ludo Royale" <<<"$html" && test "$deployed_sha" = "$CI_SHA"; then
+                echo "Production is healthy at $PRODUCTION_WEB_URL for $CI_SHA"
+                exit 0
+              fi
             fi
-            echo "Attempt $attempt/30 is not healthy yet; retrying in 2 seconds."
+            echo "Attempt $attempt/30 has not activated $CI_SHA yet; retrying in 2 seconds."
             sleep 2
           done
-          echo "Production smoke check failed for $PRODUCTION_WEB_URL"
+          echo "Production did not activate verified artifact $CI_SHA"
           curl --silent --show-error --head --max-time 15 "$PRODUCTION_WEB_URL/" || true
           exit 1
 
@@ -167,6 +189,7 @@ jobs:
     env:
       APP_VERSION: ${{ needs.prepare.outputs.version }}
       SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+      DEPLOYMENT_URL: ${{ needs.vercel.outputs.deployment_url }}
       GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -179,6 +202,8 @@ jobs:
           pattern: ludo-royale-${{ env.APP_VERSION }}-*
           path: dist
           merge-multiple: true
+      - name: Require installer artifacts
+        run: test -n "$(find dist -type f -print -quit)"
       - name: Create version commit and tag
         id: release
         run: |
@@ -210,6 +235,25 @@ jobs:
           find . -type f ! -name SHA256SUMS.txt -print0 |
             sort -z |
             xargs -0 sha256sum > SHA256SUMS.txt
+      - name: Record release provenance
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.release_sha }}
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            fs.writeFileSync("dist/RELEASE-PROVENANCE.json", JSON.stringify({
+              version: process.env.APP_VERSION,
+              source_sha: process.env.SOURCE_SHA,
+              release_sha: process.env.RELEASE_SHA,
+              ci_run_id: process.env.CI_RUN_ID,
+              production_url: "https://ludo-six-pink.vercel.app",
+              deployment_url: process.env.DEPLOYMENT_URL
+            }, null, 2) + "\n");
+          '
+          (
+            cd dist
+            sha256sum RELEASE-PROVENANCE.json >> SHA256SUMS.txt
+          )
       - name: Publish GitHub release
         run: |
           mapfile -d '' assets < <(find dist -type f -print0)
@@ -223,3 +267,32 @@ jobs:
               --generate-notes \
               --verify-tag
           fi
+
+  gate:
+    name: Delivery gate
+    if: always()
+    needs: [prepare, installers, vercel, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require a complete or intentionally skipped delivery
+        env:
+          SKIP: ${{ needs.prepare.outputs.skip }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          INSTALLERS_RESULT: ${{ needs.installers.result }}
+          VERCEL_RESULT: ${{ needs.vercel.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+        run: |
+          if test "$PREPARE_RESULT" = skipped; then
+            exit 0
+          fi
+          test "$PREPARE_RESULT" = success
+          if test "$SKIP" = true; then
+            test "$INSTALLERS_RESULT" = skipped
+            test "$VERCEL_RESULT" = skipped
+            test "$PUBLISH_RESULT" = skipped
+            exit 0
+          fi
+          test "$INSTALLERS_RESULT" = success
+          test "$VERCEL_RESULT" = success
+          test "$PUBLISH_RESULT" = success

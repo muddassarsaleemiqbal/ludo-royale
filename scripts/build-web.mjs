@@ -56,4 +56,8 @@ run("wasm-bindgen", [
   "web",
   "--no-typescript"
 ]);
-run("pnpm", ["--dir", "apps/client", "build"]);
+if (process.argv.includes("--skip-typecheck")) {
+  run("pnpm", ["--dir", "apps/client", "exec", "vite", "build"]);
+} else {
+  run("pnpm", ["--dir", "apps/client", "build"]);
+}

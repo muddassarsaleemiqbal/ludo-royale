@@ -1,0 +1,27 @@
+name: Set up cached Node and pnpm
+description: Activate pinned Node/pnpm versions and restore the lockfile-scoped pnpm store.
+
+inputs:
+  lockfile:
+    description: Lockfile used to scope the pnpm cache.
+    required: true
+  node-version:
+    description: Node.js major or exact version.
+    required: false
+    default: "22"
+  pnpm-version:
+    description: Exact pnpm version.
+    required: false
+    default: "11.17.0"
+
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v4
+      with:
+        version: ${{ inputs.pnpm-version }}
+    - uses: actions/setup-node@v6
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: pnpm
+        cache-dependency-path: ${{ inputs.lockfile }}

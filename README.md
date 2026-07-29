@@ -98,14 +98,34 @@ cargo test --workspace --all-targets --all-features
 
 ## Continuous delivery
 
-Every pull request runs the Rust, TypeScript, and WebAssembly checks. CI builds
-the production web bundle once and stores it as `web-dist`. After a successful
-CI run on `main`, the delivery workflow downloads that exact verified artifact
-and:
+Every pull request starts four independent CI lanes in parallel:
+
+- Rust formatting, Clippy, tests, documentation, and a reusable server binary;
+- TypeScript, unit/component tests, and the JavaScript dependency audit;
+- the production Rust/WebAssembly build and bundle budgets;
+- the Rust dependency security audit.
+
+The PostgreSQL and browser lane starts only after the Rust, frontend, and web
+lanes pass. It downloads the verified server binary and generated WASM package,
+then rebuilds only the API-URL-specific browser shell. This avoids recompiling
+the server, regenerating WASM, or reinstalling `wasm-bindgen`. A final CI gate
+requires every lane to succeed and provides one stable branch-protection check.
+
+CI stores the verified production bundle as `web-dist`. After a successful CI
+run on `main`, the delivery workflow downloads that exact artifact and:
 
 - builds a universal macOS DMG;
 - builds Windows x64 NSIS (`.exe`) and WiX (`.msi`) installers;
 - deploys the production web build to Vercel.
+
+The web artifact contains `build-provenance.json` and `SHA256SUMS.txt`.
+Every installer and deployment job verifies both before using the artifact.
+The production smoke check waits until the public Vercel alias serves the exact
+CI source SHA, preventing a stale deployment from passing merely because the
+homepage is reachable. Published releases include installer checksums and
+`RELEASE-PROVENANCE.json`, linking the source commit, release commit, CI run,
+desktop artifacts, and production URL. The delivery gate accepts only a fully
+published release or an intentional release-loop skip.
 
 After every successful non-release push to `main`, delivery calculates the next
 patch version, builds and deploys everything, then atomically pushes the version

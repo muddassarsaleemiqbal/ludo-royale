@@ -20,10 +20,12 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   RUST_BACKTRACE: "1"
+  PNPM_VERSION: "11.17.0"
+  NODE_VERSION: "22"
 
 jobs:
-  core:
-    name: Rust core
+  rust:
+    name: Rust quality and server artifact
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -34,12 +36,15 @@ jobs:
           sudo apt-get install --yes --no-install-recommends libasound2-dev
       - uses: ./.github/actions/setup-rust
         with:
-          shared-key: core
-      - run: cargo fmt --all --check
-      - run: >-
+          shared-key: linux-ci
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: >-
           cargo clippy --workspace --exclude ludo-tauri
           --all-targets --all-features --locked -- -D warnings
-      - run: >-
+      - name: Workspace tests
+        run: >-
           cargo test --workspace --exclude ludo-tauri
           --all-targets --all-features --locked
       - name: Documentation
@@ -48,49 +53,104 @@ jobs:
         run: >-
           cargo doc --workspace --exclude ludo-tauri
           --all-features --no-deps --locked
+      - name: Build reusable multiplayer server
+        run: cargo build --locked -p ludo-server
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ludo-server-linux
+          path: target/debug/ludo-server
+          if-no-files-found: error
+          retention-days: 2
+
+  frontend:
+    name: Frontend quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-node-pnpm
+        with:
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          lockfile: apps/client/pnpm-lock.yaml
+      - name: Install locked dependencies
+        run: pnpm --dir apps/client install --frozen-lockfile
+      - name: TypeScript
+        run: pnpm --dir apps/client typecheck
+      - name: Unit and component tests
+        run: pnpm --dir apps/client test
+      - name: Dependency audit
+        run: pnpm --dir apps/client audit --audit-level high
 
   web:
-    name: React and WebAssembly
+    name: Production web artifact
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     env:
       VITE_API_URL: ${{ vars.LUDO_API_URL }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: pnpm/action-setup@v4
+      - uses: ./.github/actions/setup-node-pnpm
         with:
-          version: 11.17.0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: apps/client/pnpm-lock.yaml
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          lockfile: apps/client/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.1
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
-          shared-key: wasm
-      - run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
-      - run: pnpm --dir apps/client install --frozen-lockfile
-      - run: pnpm --dir apps/client typecheck
-      - run: pnpm --dir apps/client test
-      - run: node scripts/build-web.mjs --require-api-url
-      - run: node scripts/ops/performance-budget.mjs
-      - run: pnpm --dir apps/client audit --audit-level high
+          shared-key: wasm-ci
+          cache-bin: "true"
+          cache-workspace-crates: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install locked dependencies
+        run: pnpm --dir apps/client install --frozen-lockfile
+      - name: Install pinned WASM binding tool
+        run: command -v wasm-bindgen >/dev/null || cargo install wasm-bindgen-cli --version 0.2.126 --locked
+      - name: Build production web application
+        run: node scripts/build-web.mjs --require-api-url --skip-typecheck
+      - name: Enforce bundle budgets
+        run: node scripts/ops/performance-budget.mjs
+      - name: Record artifact provenance and checksums
+        run: node scripts/ops/artifact-manifest.mjs create apps/client/dist "${{ github.sha }}"
       - uses: actions/upload-artifact@v7
         with:
           name: web-dist
           path: apps/client/dist
           if-no-files-found: error
           retention-days: 7
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-wasm-runtime
+          path: apps/client/src/wasm/pkg
+          if-no-files-found: error
+          retention-days: 2
 
-  multiplayer-e2e:
-    name: Multiplayer browser journey
-    needs: web
+  security:
+    name: Rust dependency audit
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: audit-0.22.2
+          cache-targets: "false"
+          cache-bin: "true"
+      - name: Install pinned audit tool
+        run: command -v cargo-audit >/dev/null || cargo install cargo-audit --version 0.22.2 --locked
+      # SQLx records its inactive, feature-gated MySQL driver in Cargo.lock.
+      # PostgreSQL is the only SQLx driver in the resolved server build graph.
+      - name: Audit resolved Rust dependencies
+        run: cargo audit --ignore RUSTSEC-2023-0071
+
+  multiplayer:
+    name: PostgreSQL and multiplayer journey
+    needs: [rust, frontend, web]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17
@@ -101,7 +161,7 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U postgres -d ludo"
-          --health-interval 5s --health-timeout 5s --health-retries 10
+          --health-interval 3s --health-timeout 3s --health-retries 15
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ludo
       LUDO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ludo
@@ -109,58 +169,83 @@ jobs:
       VITE_API_URL: http://127.0.0.1:8080
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: pnpm/action-setup@v4
+      - uses: ./.github/actions/setup-node-pnpm
         with:
-          version: 11.17.0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: apps/client/pnpm-lock.yaml
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          lockfile: apps/client/pnpm-lock.yaml
       - uses: ./.github/actions/setup-rust
         with:
-          shared-key: e2e
-      - run: pnpm --dir apps/client install --frozen-lockfile
-      - run: pnpm --dir apps/client exec playwright install --with-deps chromium
-      - run: rustup target add wasm32-unknown-unknown
-      - run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
-      - run: node scripts/build-web.mjs --require-api-url
-      - name: PostgreSQL invariants and migration test
-        run: cargo test --locked -p ludo-server server::integration_tests -- --test-threads=1
-      - name: Start multiplayer server
+          shared-key: linux-ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: ludo-server-linux
+          path: artifacts/server
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-wasm-runtime
+          path: apps/client/src/wasm/pkg
+      - name: Install locked dependencies
+        run: pnpm --dir apps/client install --frozen-lockfile
+      - name: Install Chromium
+        run: pnpm --dir apps/client exec playwright install --with-deps chromium
+      - name: Build browser test application from verified WASM
+        run: pnpm --dir apps/client exec vite build
+      - name: PostgreSQL invariants and migrations
+        run: >-
+          cargo test --locked -p ludo-server
+          server::integration_tests -- --test-threads=1
+      - name: Start verified multiplayer server
         run: |
-          cargo run --locked -p ludo-server >server.log 2>&1 &
-          for attempt in {1..180}; do
+          chmod +x artifacts/server/ludo-server
+          artifacts/server/ludo-server >server.log 2>&1 &
+          for attempt in {1..90}; do
             curl --fail --silent http://127.0.0.1:8080/health/ready && exit 0
             sleep 1
           done
           cat server.log
           exit 1
-      - run: scripts/ops/smoke-test.sh http://127.0.0.1:8080
-      - run: pnpm --dir apps/client test:e2e
+      - name: Server smoke test
+        run: scripts/ops/smoke-test.sh http://127.0.0.1:8080
+      - name: Desktop and mobile browser journeys
+        run: pnpm --dir apps/client test:e2e
       - name: Readiness load budget
         env:
           LUDO_LOAD_URL: http://127.0.0.1:8080
           LUDO_LOAD_CONCURRENCY: 25
           LUDO_LOAD_ITERATIONS: 10
         run: node scripts/ops/load-test.mjs
-      - name: Print multiplayer server log on failure
+      - name: Upload diagnostics
         if: failure()
-        run: cat server.log
-
-  security:
-    name: Dependency security audit
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: ./.github/actions/setup-rust
+        uses: actions/upload-artifact@v7
         with:
-          shared-key: audit-0.22.2
-          cache-targets: "false"
-          cache-bin: "true"
-      - run: command -v cargo-audit >/dev/null || cargo install cargo-audit --version 0.22.2 --locked
-      # SQLx records its inactive, feature-gated MySQL driver in Cargo.lock.
-      # ludo-server disables SQLx defaults and enables PostgreSQL only, so rsa
-      # is not present in the resolved build graph (`cargo tree -i rsa` is empty).
-      - run: cargo audit --ignore RUSTSEC-2023-0071
+          name: multiplayer-diagnostics
+          path: |
+            server.log
+            apps/client/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  gate:
+    name: CI gate
+    if: always()
+    needs: [rust, frontend, web, security, multiplayer]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every CI lane
+        env:
+          RUST_RESULT: ${{ needs.rust.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          WEB_RESULT: ${{ needs.web.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          MULTIPLAYER_RESULT: ${{ needs.multiplayer.result }}
+        run: |
+          for result in \
+            "$RUST_RESULT" \
+            "$FRONTEND_RESULT" \
+            "$WEB_RESULT" \
+            "$SECURITY_RESULT" \
+            "$MULTIPLAYER_RESULT"; do
+            test "$result" = success
+          done
