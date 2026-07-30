@@ -61,3 +61,4 @@ if (process.argv.includes("--skip-typecheck")) {
 } else {
   run("pnpm", ["--dir", "apps/client", "build"]);
 }
+
