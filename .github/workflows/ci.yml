@@ -38,10 +38,10 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-  clippy:
-    name: Rust Clippy lints
+  rust-verify:
+    name: Rust verification and shared compile
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Linux audio dependency
@@ -51,77 +51,15 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           shared-key: linux-ci
-      - name: Clippy
+      - name: Run Rust checks and share compilation
         env:
           RUSTC_WRAPPER: sccache
-        run: >-
-          cargo clippy --workspace --exclude ludo-tauri
-          --all-targets --all-features --locked -- -D warnings
-
-  test:
-    name: Workspace tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Install Linux audio dependency
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libasound2-dev
-      - uses: ./.github/actions/setup-rust
-        with:
-          shared-key: linux-ci
-      - name: Workspace tests
-        env:
-          RUSTC_WRAPPER: sccache
-        run: >-
-          cargo nextest run --workspace --exclude ludo-tauri
-          --all-targets --all-features --locked
-
-  doc:
-    name: Rust documentation
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Install Linux audio dependency
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libasound2-dev
-      - uses: ./.github/actions/setup-rust
-        with:
-          shared-key: linux-ci
-      - name: Documentation
-        env:
           RUSTDOCFLAGS: -D warnings
-          RUSTC_WRAPPER: sccache
-        run: >-
-          cargo doc --workspace --exclude ludo-tauri
-          --all-features --no-deps --locked
-
-  server:
-    name: Build server artifact
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Install Linux audio dependency
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libasound2-dev
-      - uses: ./.github/actions/setup-rust
-        with:
-          shared-key: linux-ci
-      - name: Build reusable multiplayer server
-        env:
-          RUSTC_WRAPPER: sccache
-        run: cargo build --locked -p ludo-server
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ludo-server-linux
-          path: target/debug/ludo-server
-          if-no-files-found: error
-          retention-days: 2
+          cargo clippy --workspace --exclude ludo-tauri --all-targets --all-features --locked -- -D warnings
+          cargo nextest run --workspace --exclude ludo-tauri --all-targets --all-features --locked
+          cargo doc --workspace --exclude ludo-tauri --all-features --no-deps --locked
+          cargo build --locked -p ludo-server
 
   frontend-types:
     name: Frontend TypeScript check
@@ -249,163 +187,37 @@ jobs:
           RUSTC_WRAPPER: sccache
         run: cargo audit --ignore RUSTSEC-2023-0071
 
-  db-tests:
-    name: PostgreSQL invariants and migrations
-    needs: [server]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: ludo
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d ludo"
-          --health-interval 3s --health-timeout 3s --health-retries 15
-    env:
-      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ludo
-      LUDO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ludo
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: ./.github/actions/setup-rust
-        with:
-          shared-key: linux-ci
-      - uses: actions/download-artifact@v8
-        with:
-          name: ludo-server-linux
-          path: artifacts/server
-      - name: PostgreSQL invariants and migrations
-        run: >-
-          cargo nextest run --locked -p ludo-server
-          server::integration_tests --test-threads=1
-
-  e2e-journey:
-    name: Desktop and mobile browser journeys
-    needs: [server, web]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: ludo
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d ludo"
-          --health-interval 3s --health-timeout 3s --health-retries 15
-    env:
-      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ludo
-      LUDO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ludo
-      LUDO_ALLOWED_ORIGINS: http://127.0.0.1:4173
-      VITE_API_URL: http://127.0.0.1:8080
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: ./.github/actions/setup-node-pnpm
-        with:
-          pnpm-version: ${{ env.PNPM_VERSION }}
-          node-version: ${{ env.NODE_VERSION }}
-          lockfile: apps/client/pnpm-lock.yaml
-      - uses: actions/download-artifact@v8
-        with:
-          name: ludo-server-linux
-          path: artifacts/server
-      - uses: actions/download-artifact@v8
-        with:
-          name: web-wasm-runtime
-          path: apps/client/src/wasm/pkg
-      - name: Install locked dependencies
-        run: pnpm --dir apps/client install --frozen-lockfile
-      - name: Cache Playwright Browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('apps/client/pnpm-lock.yaml') }}
-      - name: Install Chromium
-        run: pnpm --dir apps/client exec playwright install --with-deps chromium
-      - name: Build browser test application from verified WASM
-        run: pnpm --dir apps/client exec vite build
-      - name: Start verified multiplayer server
-        run: |
-          chmod +x artifacts/server/ludo-server
-          artifacts/server/ludo-server >server.log 2>&1 &
-          for attempt in {1..90}; do
-            curl --fail --silent http://127.0.0.1:8080/health/ready && exit 0
-            sleep 1
-          done
-          cat server.log
-          exit 1
-      - name: Server smoke test
-        run: scripts/ops/smoke-test.sh http://127.0.0.1:8080
-      - name: Desktop and mobile browser journeys
-        run: pnpm --dir apps/client test:e2e
-      - name: Readiness load budget
-        env:
-          LUDO_LOAD_URL: http://127.0.0.1:8080
-          LUDO_LOAD_CONCURRENCY: 25
-          LUDO_LOAD_ITERATIONS: 10
-        run: node scripts/ops/load-test.mjs
-      - name: Upload diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: multiplayer-diagnostics
-          path: |
-            server.log
-            apps/client/test-results
-          if-no-files-found: ignore
-          retention-days: 7
-
   gate:
     name: CI gate
     if: always()
     needs:
       - fmt
-      - clippy
-      - test
-      - doc
-      - server
+      - rust-verify
       - frontend-types
       - frontend-unit
       - frontend-audit
       - web
       - security
-      - db-tests
-      - e2e-journey
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - name: Require every CI lane
         env:
           FMT_RESULT: ${{ needs.fmt.result }}
-          CLIPPY_RESULT: ${{ needs.clippy.result }}
-          TEST_RESULT: ${{ needs.test.result }}
-          DOC_RESULT: ${{ needs.doc.result }}
-          SERVER_RESULT: ${{ needs.server.result }}
+          RUST_VERIFY_RESULT: ${{ needs.rust-verify.result }}
           FRONTEND_TYPES_RESULT: ${{ needs.frontend-types.result }}
           FRONTEND_UNIT_RESULT: ${{ needs.frontend-unit.result }}
           FRONTEND_AUDIT_RESULT: ${{ needs.frontend-audit.result }}
           WEB_RESULT: ${{ needs.web.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
-          DB_TESTS_RESULT: ${{ needs.db-tests.result }}
-          E2E_JOURNEY_RESULT: ${{ needs.e2e-journey.result }}
         run: |
           for result in \
             "$FMT_RESULT" \
-            "$CLIPPY_RESULT" \
-            "$TEST_RESULT" \
-            "$DOC_RESULT" \
-            "$SERVER_RESULT" \
+            "$RUST_VERIFY_RESULT" \
             "$FRONTEND_TYPES_RESULT" \
             "$FRONTEND_UNIT_RESULT" \
             "$FRONTEND_AUDIT_RESULT" \
             "$WEB_RESULT" \
-            "$SECURITY_RESULT" \
-            "$DB_TESTS_RESULT" \
-            "$E2E_JOURNEY_RESULT"; do
+            "$SECURITY_RESULT"; do
             test "$result" = success
           done

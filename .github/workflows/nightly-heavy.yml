@@ -1,0 +1,192 @@
+name: nightly-heavy
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  PNPM_VERSION: 10.15.0
+  NODE_VERSION: 22.19.0
+
+jobs:
+  build-server-artifact:
+    name: Build reusable multiplayer server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Linux audio dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libasound2-dev
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: linux-ci
+      - name: Build reusable multiplayer server
+        env:
+          RUSTC_WRAPPER: sccache
+        run: cargo build --locked -p ludo-server
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ludo-server-linux
+          path: target/debug/ludo-server
+          if-no-files-found: error
+          retention-days: 2
+
+  build-web-artifact:
+    name: Build web artifacts for browser journeys
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      VITE_API_URL: ${{ vars.LUDO_API_URL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-node-pnpm
+        with:
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          lockfile: apps/client/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: wasm32-unknown-unknown
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: wasm-ci
+          cache-bin: "true"
+          cache-workspace-crates: "false"
+      - name: Install locked dependencies
+        run: pnpm --dir apps/client install --frozen-lockfile
+      - name: Install pinned WASM binding tool
+        run: |
+          if ! command -v wasm-bindgen >/dev/null; then
+            mkdir -p ~/.cargo/bin
+            curl -sSL https://github.com/rustwasm/wasm-bindgen/releases/download/0.2.126/wasm-bindgen-0.2.126-x86_64-unknown-linux-musl.tar.gz | tar -xz -C ~/.cargo/bin --strip-components=1 wasm-bindgen-0.2.126-x86_64-unknown-linux-musl/wasm-bindgen || cargo install wasm-bindgen-cli --version 0.2.126 --locked
+          fi
+      - name: Build production web application
+        env:
+          RUSTC_WRAPPER: sccache
+        run: node scripts/build-web.mjs --require-api-url --skip-typecheck
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-wasm-runtime
+          path: apps/client/src/wasm/pkg
+          if-no-files-found: error
+          retention-days: 2
+
+  db-tests:
+    name: PostgreSQL invariants and migrations
+    needs: [build-server-artifact]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ludo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ludo"
+          --health-interval 3s --health-timeout 3s --health-retries 15
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ludo
+      LUDO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ludo
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: linux-ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: ludo-server-linux
+          path: artifacts/server
+      - name: PostgreSQL invariants and migrations
+        run: >-
+          cargo nextest run --locked -p ludo-server
+          server::integration_tests --test-threads=1
+
+  e2e-journey:
+    name: Desktop and mobile browser journeys
+    needs: [build-server-artifact, build-web-artifact]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ludo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ludo"
+          --health-interval 3s --health-timeout 3s --health-retries 15
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ludo
+      LUDO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ludo
+      LUDO_ALLOWED_ORIGINS: http://127.0.0.1:4173
+      VITE_API_URL: http://127.0.0.1:8080
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-node-pnpm
+        with:
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          lockfile: apps/client/pnpm-lock.yaml
+      - uses: actions/download-artifact@v8
+        with:
+          name: ludo-server-linux
+          path: artifacts/server
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-wasm-runtime
+          path: apps/client/src/wasm/pkg
+      - name: Install locked dependencies
+        run: pnpm --dir apps/client install --frozen-lockfile
+      - name: Cache Playwright Browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('apps/client/pnpm-lock.yaml') }}
+      - name: Install Chromium
+        run: pnpm --dir apps/client exec playwright install --with-deps chromium
+      - name: Build browser test application from verified WASM
+        run: pnpm --dir apps/client exec vite build
+      - name: Start verified multiplayer server
+        run: |
+          chmod +x artifacts/server/ludo-server
+          artifacts/server/ludo-server >server.log 2>&1 &
+          for attempt in {1..90}; do
+            curl --fail --silent http://127.0.0.1:8080/health/ready && exit 0
+            sleep 1
+          done
+          cat server.log
+          exit 1
+      - name: Server smoke test
+        run: scripts/ops/smoke-test.sh http://127.0.0.1:8080
+      - name: Desktop and mobile browser journeys
+        run: pnpm --dir apps/client test:e2e
+      - name: Readiness load budget
+        env:
+          LUDO_LOAD_URL: http://127.0.0.1:8080
+          LUDO_LOAD_CONCURRENCY: 25
+          LUDO_LOAD_ITERATIONS: 10
+        run: node scripts/ops/load-test.mjs
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: multiplayer-diagnostics
+          path: |
+            server.log
+            apps/client/test-results
+          if-no-files-found: ignore
+          retention-days: 7
