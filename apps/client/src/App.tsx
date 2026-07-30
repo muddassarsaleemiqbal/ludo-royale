@@ -243,7 +243,7 @@ function SetupScreen({
             <div className="seat-list">{online.lobby.seats.map((seat, index) => <div className={seat.is_bot ? "bot-seat" : "human-seat"} key={seat.seat}><span>{index + 1}</span><div><strong>{seat.name}</strong><small>{seat.is_bot ? "AI fills this seat" : `${seat.ready ? "Ready" : "Not ready"} · ${seat.presence}`}</small></div>{seat.ready && !seat.is_bot && <CheckCircle2 className="ready-icon" />}{online.lobby?.host_user_id === online.user?.id && seat.user_id && seat.user_id !== online.user?.id && <button className="seat-kick" aria-label={`Remove ${seat.name}`} onClick={() => onlineStore.kickPlayer(seat.user_id!)}><UserX /></button>}{online.lobby?.host_user_id === seat.user_id && <Crown />}</div>)}</div>
             {online.lobby.host_user_id === online.user.id && online.lobby.requests.length > 0 && <div className="request-list"><strong>Join requests</strong>{online.lobby.requests.map(request => <div key={request.id}><span>{request.display_name}</span><Button size="sm" disabled={online.pending === `request:${request.id}`} onClick={() => onlineStore.respondJoin(request.id, true)}>{online.pending === `request:${request.id}` ? "Saving…" : "Accept"}</Button><Button size="sm" variant="ghost" disabled={online.pending === `request:${request.id}`} onClick={() => onlineStore.respondJoin(request.id, false)}>Decline</Button></div>)}</div>}
             {online.lobby.host_user_id === online.user.id && <div className="host-controls"><select aria-label="Lobby rules" value={online.lobby.rule_preset} disabled={online.lobby.ranked} onChange={event => onlineStore.updateLobby({ rule_preset:event.target.value, bot_difficulty:online.lobby!.bot_difficulty, is_public:online.lobby!.is_public, turn_seconds:online.lobby!.turn_seconds })}>{presets.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select aria-label="Lobby AI difficulty" value={online.lobby.bot_difficulty} disabled={online.lobby.ranked} onChange={event => onlineStore.updateLobby({ rule_preset:online.lobby!.rule_preset, bot_difficulty:event.target.value, is_public:online.lobby!.is_public, turn_seconds:online.lobby!.turn_seconds })}>{["easy","medium","hard"].map(level => <option key={level} value={level}>{level} AI</option>)}</select><select aria-label="Lobby turn timer" value={online.lobby.turn_seconds} onChange={event => onlineStore.updateLobby({ rule_preset:online.lobby!.rule_preset, bot_difficulty:online.lobby!.bot_difficulty, is_public:online.lobby!.is_public, turn_seconds:Number(event.target.value) })}>{[15,30,45,60].map(seconds => <option key={seconds} value={seconds}>{seconds}s turns</option>)}</select><select aria-label="Rematch setting" value={online.lobby.rematch_mode} onChange={event => onlineStore.updateLobby({ rule_preset:online.lobby!.rule_preset, bot_difficulty:online.lobby!.bot_difficulty, is_public:online.lobby!.is_public, turn_seconds:online.lobby!.turn_seconds, rematch_mode:event.target.value })}><option value="vote">Rematch vote</option><option value="host">Host decides</option><option value="automatic">Quick rematch</option></select><button role="switch" aria-checked={online.lobby.is_public} disabled={online.lobby.ranked} onClick={() => onlineStore.updateLobby({ rule_preset:online.lobby!.rule_preset, bot_difficulty:online.lobby!.bot_difficulty, is_public:!online.lobby!.is_public, turn_seconds:online.lobby!.turn_seconds })}>{online.lobby.is_public ? "Public table" : "Private table"}</button></div>}
-            <div className="lobby-actions">{online.lobby.host_user_id === online.user.id ? <><Button variant="secondary" onClick={() => setConfirmLeave(true)}>Transfer host / close</Button><Button size="lg" disabled={online.pending === "start" || online.lobby.seats.some(seat => !seat.is_bot && seat.user_id !== online.user!.id && !seat.ready)} onClick={() => onlineStore.startGame()}>{online.pending === "start" ? "Starting…" : "Start with this lineup"}</Button></> : <><Button variant="secondary" onClick={() => onlineStore.setReady(!online.lobby!.seats.find(seat => seat.user_id === online.user!.id)?.ready)}>{online.lobby.seats.find(seat => seat.user_id === online.user!.id)?.ready ? "Not ready" : "I'm ready"}</Button><Button variant="ghost" onClick={() => setConfirmLeave(true)}>Leave table</Button></>}</div>
+            <div className="lobby-actions">{online.lobby.host_user_id === online.user.id ? <><Button variant="secondary" className="lobby-exit-button" onClick={() => setConfirmLeave(true)}>Leave table</Button><Button size="lg" disabled={online.pending === "start" || online.lobby.seats.some(seat => !seat.is_bot && seat.user_id !== online.user!.id && !seat.ready)} onClick={() => onlineStore.startGame()}>{online.pending === "start" ? "Starting…" : "Start with this lineup"}</Button></> : <><Button variant="secondary" onClick={() => onlineStore.setReady(!online.lobby!.seats.find(seat => seat.user_id === online.user!.id)?.ready)}>{online.lobby.seats.find(seat => seat.user_id === online.user!.id)?.ready ? "Not ready" : "I'm ready"}</Button><Button className="lobby-exit-button" variant="ghost" onClick={() => setConfirmLeave(true)}>Leave table</Button></>}</div>
           </div> : <div className="table-browser">
             <div className="browser-heading"><div><strong>Open tables</strong><small>Join friends or watch live games</small></div><Button size="icon" variant="ghost" onClick={() => onlineStore.listLobbies()} aria-label="Refresh tables"><RefreshCw /></Button></div>
             <div className="lobby-filters"><select aria-label="Filter by rules" value={rulesFilter} onChange={event => setRulesFilter(event.target.value)}><option value="all">All rules</option>{presets.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select aria-label="Filter by occupancy" value={occupancyFilter} onChange={event => setOccupancyFilter(event.target.value)}><option value="all">Any seats</option><option value="open">Open seats</option><option value="nearly">Nearly full</option></select></div>
@@ -368,6 +368,12 @@ export default function App() {
     })),
     [activeModel?.tokens, current?.id, online.model, online.player]
   );
+  const legalTokenNumbers = boardTokens.filter(token => token.selectable).map(token => token.token + 1);
+  const legalMovePrompt = legalTokenNumbers.length === 1
+    ? `Move token ${legalTokenNumbers[0]}`
+    : legalTokenNumbers.length > 1
+      ? `Choose token ${legalTokenNumbers.join(" or ")}`
+      : null;
   const handleTokenSelect = useCallback((token: number) => {
     gameAudio.unlock();
     if (online.model) {
@@ -540,6 +546,12 @@ export default function App() {
               <PlayerCard key={player.id} player={player} compact presence={online.presence[player.id]} />
             ))}
           </div>
+          {online.model && <div className="mobile-social-panel social-panel">
+            <div className="social-title"><MessageCircle /><strong>Match feed</strong>{online.spectating && <span>Watching</span>}</div>
+            <div className="event-feed" aria-live="polite">{online.events.length ? online.events.map(event => <div className={`event-${event.kind}`} key={event.id}>{event.message}</div>) : <span>Moves, reactions, and chat appear here.</span>}</div>
+            <div className="reaction-row">{["👍","👏","😮","😂","🔥","👑"].map(emoji => <button key={emoji} aria-label={`React ${emoji}`} onClick={() => onlineStore.react(emoji)}>{emoji}</button>)}</div>
+            <form className="chat-form" onSubmit={event => { event.preventDefault(); if (chatText.trim()) { onlineStore.chat(chatText); setChatText(""); } }}><label className="sr-only" htmlFor="mobile-match-chat">Match chat</label><input id="mobile-match-chat" value={chatText} onChange={event => setChatText(event.target.value)} maxLength={240} placeholder="Say something…" /><button type="submit" aria-label="Send chat">Send</button></form>
+          </div>}
           <LudoBoard
             tokens={boardTokens}
             onSelect={handleTokenSelect}
@@ -549,6 +561,10 @@ export default function App() {
             capturedKeys={capturedKeys}
             homeKey={homeKey}
           />
+          {legalMovePrompt && <div className="legal-move-hint" role="status">
+            <span className={`color-dot ${current?.color.toLowerCase()}`} />
+            {legalMovePrompt} — tap the glowing piece
+          </div>}
           <div className="mobile-status" aria-live="polite">{turnStatus} · {status}</div>
         </section>
 
@@ -575,7 +591,7 @@ export default function App() {
               : activeModel.can_roll
                 ? "Roll dice"
                 : activeModel.human_turn
-                  ? "Choose a token"
+                  ? legalMovePrompt ?? "Choose a token"
                   : "Waiting for AI"}
           </Button>
           <div className="status-card">
@@ -585,9 +601,17 @@ export default function App() {
           <div className="rule-note" title="A six releases a token from its yard. Captures grant a bonus turn.">
             Roll a six to enter the board. Capture rivals to earn another turn.
           </div>
+          {online.model && !online.spectating && <Button
+            variant="secondary"
+            className="w-full game-exit-action"
+            disabled={online.pending === "leave-match" || online.pending === "end-game"}
+            onClick={() => online.lobbies.find(lobby => lobby.id === online.lobbyId)?.is_host ? onlineStore.endGame() : onlineStore.leaveMatch()}
+          >
+            {online.lobbies.find(lobby => lobby.id === online.lobbyId)?.is_host ? "End game for everyone" : "Leave game"}
+          </Button>}
           <Dialog open={confirmNew} onOpenChange={setConfirmNew}>
             <DialogTrigger asChild>
-              <Button variant="secondary" className="w-full">New game</Button>
+              <Button variant="secondary" className="w-full game-new-action">New game</Button>
             </DialogTrigger>
             <DialogContent>
               <DialogTitle className="text-xl font-bold">Start a new game?</DialogTitle>

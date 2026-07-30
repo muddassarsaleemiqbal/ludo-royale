@@ -149,6 +149,119 @@ pub(super) async fn sync_game(
     Ok(())
 }
 
+/// Replaces a departing human with an AI immediately, including when it is
+/// their current turn. This avoids leaving the table stalled until a deadline.
+pub(super) async fn leave_match(
+    state: &AppState,
+    user: &User,
+    lobby_id: Uuid,
+) -> Result<(), ApiError> {
+    let mut tx = state.db.begin().await?;
+    let row = sqlx::query(
+        "SELECT l.game_state,m.seat,l.turn_seconds FROM game_lobbies l
+         JOIN lobby_members m ON m.lobby_id=l.id
+         WHERE l.id=$1 AND m.user_id=$2 AND l.status='playing' FOR UPDATE OF l",
+    )
+    .bind(lobby_id)
+    .bind(user.id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::bad_request("Game not found"))?;
+    let seat = usize::try_from(row.get::<i16, _>(1)).unwrap_or(4);
+    let turn_seconds = u16::try_from(row.get::<i16, _>(2)).unwrap_or(TURN_SECONDS);
+    let mut game: GameState = serde_json::from_value(row.get(0))
+        .map_err(|_| ApiError::internal("Stored game is invalid"))?;
+    game.update_player_control(
+        player_id(u8::try_from(seat).unwrap_or(0)),
+        format!("Royal Bot {}", seat + 1),
+        Controller::Bot,
+    )
+    .map_err(|_| ApiError::internal("Could not replace player with AI"))?;
+    sqlx::query("DELETE FROM lobby_members WHERE lobby_id=$1 AND user_id=$2")
+        .bind(lobby_id)
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    let mut frames = run_bots(&mut game);
+    let status = if game.status() == GameStatus::Finished {
+        "finished"
+    } else {
+        "playing"
+    };
+    let replay = serde_json::to_value(
+        frames
+            .iter()
+            .map(|frame| frame.model.clone())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|_| ApiError::internal("Could not update replay"))?;
+    sqlx::query(
+        "UPDATE game_lobbies SET game_state=$2,status=$3::lobby_status,
+         replay_states=replay_states||$5::jsonb,
+         turn_deadline=CASE WHEN $3='playing' THEN CURRENT_TIMESTAMP+($4::text||' seconds')::interval ELSE NULL END,
+         updated_at=CURRENT_TIMESTAMP WHERE id=$1",
+    )
+    .bind(lobby_id)
+    .bind(serde_json::to_value(&game).map_err(|_| ApiError::internal("Could not save game"))?)
+    .bind(status)
+    .bind(turn_seconds.to_string())
+    .bind(replay)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    send_to(
+        state,
+        user.id,
+        ServerMessage::MatchEnded {
+            lobby_id,
+            message: "You left the match. An AI has taken your seat.".to_owned(),
+        },
+    )
+    .await;
+    for frame in frames.drain(..) {
+        broadcast_model(state, lobby_id, frame.model, turn_seconds).await?;
+    }
+    broadcast_lobbies(state).await;
+    Ok(())
+}
+
+/// Allows the host to stop an active unranked table for everyone.
+pub(super) async fn end_game(
+    state: &AppState,
+    user: &User,
+    lobby_id: Uuid,
+) -> Result<(), ApiError> {
+    let stopped = sqlx::query(
+        "UPDATE game_lobbies SET status='finished',turn_deadline=NULL,updated_at=CURRENT_TIMESTAMP
+         WHERE id=$1 AND host_user_id=$2 AND status='playing' AND NOT ranked",
+    )
+    .bind(lobby_id)
+    .bind(user.id)
+    .execute(&state.db)
+    .await?;
+    if stopped.rows_affected() == 0 {
+        return Err(ApiError::bad_request(
+            "Only the host can end an active unranked game",
+        ));
+    }
+    let users: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM lobby_members WHERE lobby_id=$1 UNION SELECT user_id FROM lobby_spectators WHERE lobby_id=$1",
+    ).bind(lobby_id).fetch_all(&state.db).await?;
+    for user_id in users {
+        send_to(
+            state,
+            user_id,
+            ServerMessage::MatchEnded {
+                lobby_id,
+                message: "The host ended this match.".to_owned(),
+            },
+        )
+        .await;
+    }
+    broadcast_lobbies(state).await;
+    Ok(())
+}
+
 pub(super) async fn spectate(
     state: &AppState,
     user: &User,
@@ -686,6 +799,7 @@ pub(super) async fn settle_player(
 pub(super) fn run_bots(game: &mut GameState) -> Vec<BotFrame> {
     let mut frames = Vec::new();
     let mut steps = 0;
+    let mut showed_no_move_roll = false;
     while game.status() == GameStatus::Playing
         && game.current().player.controller == Controller::Bot
         && steps < 128
@@ -709,6 +823,9 @@ pub(super) fn run_bots(game: &mut GameState) -> Vec<BotFrame> {
                 let decision = ParallelBot::choose(
                     &BotRequest::new(game.clone(), difficulty).with_thinking_time_ms(0),
                 );
+                // A roll with no legal move has already advanced the turn in
+                // the domain. This branch is only reachable for a malformed
+                // persisted state, so do not leave the AI turn stalled.
                 let Some(token) = decision.token.or_else(|| legal_tokens.first().copied()) else {
                     break;
                 };
@@ -734,9 +851,23 @@ pub(super) fn run_bots(game: &mut GameState) -> Vec<BotFrame> {
             model.human_turn = false;
             model.can_roll = false;
             model.status = format!("{rolling_name} rolled {dice} — no legal move");
+            showed_no_move_roll = true;
         }
         frames.push(BotFrame { model, delay_ms });
         steps += 1;
+    }
+    // The no-legal-move roll frame deliberately keeps the die visible for a
+    // moment, but it describes the player who just rolled. Follow it with the
+    // authoritative next-turn state so clients do not remain stuck on that
+    // presentation frame until the turn deadline expires.
+    if showed_no_move_roll
+        && game.status() == GameStatus::Playing
+        && game.current().player.controller != Controller::Bot
+    {
+        frames.push(BotFrame {
+            model: GameViewModel::from(&*game),
+            delay_ms: 0,
+        });
     }
     frames
 }

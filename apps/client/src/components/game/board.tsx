@@ -64,13 +64,17 @@ const BoardToken = memo(function BoardToken({
   onSelect,
   isRecent,
   isCaptured,
-  reachedHome
+  reachedHome,
+  stackIndex,
+  stackSize
 }: {
   token: TokenViewModel;
   onSelect(token: number): void;
   isRecent: boolean;
   isCaptured: boolean;
   reachedHome: boolean;
+  stackIndex: number;
+  stackSize: number;
 }) {
   const point = coordinate(token.color, token.token, token.position);
   const preview = token.preview ? coordinate(token.color, token.token, token.preview) : null;
@@ -87,6 +91,7 @@ const BoardToken = memo(function BoardToken({
           aria-hidden="true"
         >
           <Flag />
+          <b>{token.token + 1}</b>
         </span>
       )}
       <button
@@ -100,7 +105,9 @@ const BoardToken = memo(function BoardToken({
         )}
         style={{
           "--token-row": point[0],
-          "--token-column": point[1]
+          "--token-column": point[1],
+          "--stack-x": stackSize > 1 ? `${stackIndex % 2 ? 18 : -18}%` : "0%",
+          "--stack-y": stackSize > 2 ? `${stackIndex > 1 ? 18 : -18}%` : "0%"
         } as React.CSSProperties}
         disabled={!token.selectable}
         onClick={() => onSelect(token.token)}
@@ -160,10 +167,22 @@ export const LudoBoard = memo(function LudoBoard({
     previousTokens.current = tokens;
     return () => timers.forEach(timer => window.clearTimeout(timer));
   }, [animate, tokens]);
-  const displayTokens = useMemo(() => tokens.map(token => ({
-    ...token,
-    position: displayPositions[`${token.player}:${token.token}`] ?? token.position
-  })), [displayPositions, tokens]);
+  const displayTokens = useMemo(() => {
+    const positioned = tokens.map(token => ({
+      ...token,
+      position: displayPositions[`${token.player}:${token.token}`] ?? token.position
+    }));
+    const groups = new Map<string, number[]>();
+    positioned.forEach((token, index) => {
+      const point = coordinate(token.color, token.token, token.position);
+      if (point) groups.set(point.join(":"), [...(groups.get(point.join(":")) ?? []), index]);
+    });
+    return positioned.map((token, index) => {
+      const point = coordinate(token.color, token.token, token.position);
+      const group = point ? groups.get(point.join(":")) ?? [index] : [index];
+      return { ...token, stackIndex: group.indexOf(index), stackSize: group.length };
+    });
+  }, [displayPositions, tokens]);
   const cells = useMemo(() => Array.from({ length: 225 }, (_, index) => {
     const row = Math.floor(index / 15);
     const column = index % 15;
@@ -193,6 +212,8 @@ export const LudoBoard = memo(function LudoBoard({
             isRecent={recentMoveKey === `${token.player}:${token.token}`}
             isCaptured={capturedKeys.includes(`${token.player}:${token.token}`)}
             reachedHome={homeKey === `${token.player}:${token.token}`}
+            stackIndex={token.stackIndex}
+            stackSize={token.stackSize}
           />
         ))}
       </div>

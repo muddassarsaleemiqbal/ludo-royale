@@ -5,11 +5,12 @@ use super::{
     EncodingKey, Header, HeaderMap, IntoResponse, Message, Ordering, PgPool, Postgres, Row,
     Serialize, ServerMessage, SinkExt, State, StatusCode, Transaction, User, Uuid, WebSocket,
     WebSocketUpgrade, add_activity, apply_action, authenticate_header, authenticate_token,
-    broadcast_lobbies, broadcast_presence, create_lobby, encode, enforce_rate_limit, invite_friend,
-    kick_player, leave_lobby, mpsc, now, quick_match, ranked_match, remove_friend, request_join,
-    respond_friend_invite, respond_friend_request, respond_join, resume_user_state, search_players,
-    send_friend_request, send_hub, send_lobbies, send_lobby, send_lobby_to, send_replay,
-    set_cosmetics, spectate, start_game, sync_game, update_lobby, vote_rematch, websocket_token,
+    broadcast_lobbies, broadcast_presence, create_lobby, encode, end_game, enforce_rate_limit,
+    invite_friend, kick_player, leave_lobby, leave_match, mpsc, now, quick_match, ranked_match,
+    remove_friend, request_join, respond_friend_invite, respond_friend_request, respond_join,
+    resume_user_state, search_players, send_friend_request, send_hub, send_lobbies, send_lobby,
+    send_lobby_to, send_replay, set_cosmetics, spectate, start_game, sync_game, update_lobby,
+    vote_rematch, websocket_token,
 };
 use futures_util::StreamExt;
 
@@ -384,6 +385,8 @@ pub(super) async fn handle_online(
             respond_join(state, user, request_id, accept).await?;
         }
         ClientMessage::LeaveLobby { lobby_id } => leave_lobby(state, user, lobby_id).await?,
+        ClientMessage::LeaveMatch { lobby_id } => leave_match(state, user, lobby_id).await?,
+        ClientMessage::EndGame { lobby_id } => end_game(state, user, lobby_id).await?,
         ClientMessage::KickPlayer { lobby_id, user_id } => {
             kick_player(state, user, lobby_id, user_id).await?;
         }

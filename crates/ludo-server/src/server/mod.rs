@@ -75,8 +75,8 @@ use lobby::{
     send_lobbies, send_lobby, send_lobby_to, update_lobby,
 };
 use matches::{
-    add_activity, apply_action, broadcast_presence, run_match_supervisor, spectate, start_game,
-    sync_game, vote_rematch,
+    add_activity, apply_action, broadcast_presence, end_game, leave_match, run_match_supervisor,
+    spectate, start_game, sync_game, vote_rematch,
 };
 use metrics::{Metrics, metrics};
 use realtime::{ably_token, enqueue_outbox, publish_ably, run_outbox, send_to, websocket};
@@ -200,6 +200,12 @@ enum ClientMessage {
         accept: bool,
     },
     LeaveLobby {
+        lobby_id: Uuid,
+    },
+    LeaveMatch {
+        lobby_id: Uuid,
+    },
+    EndGame {
         lobby_id: Uuid,
     },
     KickPlayer {
@@ -464,6 +470,10 @@ enum ServerMessage {
         votes: i64,
         needed: i64,
     },
+    MatchEnded {
+        lobby_id: Uuid,
+        message: String,
+    },
     Ack {
         command_id: Uuid,
     },
@@ -535,10 +545,12 @@ mod tests {
 
         assert!(!frames.is_empty());
         assert!(frames[0].model.revision > initial_revision);
+        // A no-move roll can be followed by the authoritative next-turn
+        // frame at the same revision, after its brief dice animation.
         assert!(
             frames
                 .windows(2)
-                .all(|pair| { pair[0].model.revision < pair[1].model.revision })
+                .all(|pair| { pair[0].model.revision <= pair[1].model.revision })
         );
         assert!(frames.iter().any(|frame| frame.model.dice.is_some()));
     }

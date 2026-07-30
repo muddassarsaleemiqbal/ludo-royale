@@ -84,6 +84,7 @@ type ServerMessage =
   | { type: "activity"; lobby_id: string; event: Activity }
   | { type: "feed"; lobby_id: string; events: Activity[] }
   | { type: "rematch_update"; lobby_id: string; votes: number; needed: number }
+  | { type: "match_ended"; lobby_id: string; message: string }
   | { type: "ack"; command_id: string }
   | { type: "pong" }
   | {
@@ -239,6 +240,12 @@ class OnlineStore {
     if (!this.snapshot.lobby) return;
     this.send({ type: "leave_lobby", lobby_id: this.snapshot.lobby.id });
     this.set({ lobby: null, pending: null, error: null });
+  }
+  leaveMatch() {
+    if (this.snapshot.lobbyId) this.command("leave-match", { type: "leave_match", lobby_id: this.snapshot.lobbyId });
+  }
+  endGame() {
+    if (this.snapshot.lobbyId) this.command("end-game", { type: "end_game", lobby_id: this.snapshot.lobbyId });
   }
   startGame() {
     if (this.snapshot.lobby)
@@ -522,6 +529,15 @@ class OnlineStore {
     }
     if (value.type === "rematch_update") {
       this.set({ rematchVotes: { votes: value.votes, needed: value.needed } });
+      return;
+    }
+    if (value.type === "match_ended") {
+      if (this.snapshot.lobbyId !== value.lobby_id) return;
+      localStorage.removeItem(lobbyKey);
+      localStorage.removeItem(spectatorKey);
+      this.set({ lobbyId: null, model: null, player: null, spectating: false,
+        turnDeadline: null, pending: null, toast: value.message, events: [] });
+      this.listLobbies();
       return;
     }
     if (value.command_id) this.commands.delete(value.command_id);
