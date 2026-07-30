@@ -23,6 +23,14 @@ runs:
         rustc --version --verbose
         cargo --version
 
+    - name: Install mold fast linker and cargo-nextest
+      uses: taiki-e/install-action@v2
+      with:
+        tool: mold,cargo-nextest
+
+    - name: Set up sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+
     - name: Restore smart Rust cache
       uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
       with:
@@ -30,4 +38,3 @@ runs:
         cache-targets: ${{ inputs.cache-targets }}
         cache-bin: ${{ inputs.cache-bin }}
         cache-workspace-crates: "false"
-        save-if: ${{ github.ref == 'refs/heads/main' }}

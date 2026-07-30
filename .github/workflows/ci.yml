@@ -20,14 +20,29 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   RUST_BACKTRACE: "1"
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
   PNPM_VERSION: "11.17.0"
   NODE_VERSION: "22"
 
 jobs:
-  rust:
-    name: Rust quality and server artifact
+  fmt:
+    name: Fast code formatting check
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  clippy:
+    name: Rust Clippy lints
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Linux audio dependency
@@ -37,22 +52,62 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           shared-key: linux-ci
-      - name: Formatting
-        run: cargo fmt --all --check
       - name: Clippy
         run: >-
           cargo clippy --workspace --exclude ludo-tauri
           --all-targets --all-features --locked -- -D warnings
+
+  test:
+    name: Workspace tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Linux audio dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libasound2-dev
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: linux-ci
       - name: Workspace tests
         run: >-
-          cargo test --workspace --exclude ludo-tauri
+          cargo nextest run --workspace --exclude ludo-tauri
           --all-targets --all-features --locked
+
+  doc:
+    name: Rust documentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Linux audio dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libasound2-dev
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: linux-ci
       - name: Documentation
         env:
           RUSTDOCFLAGS: -D warnings
         run: >-
           cargo doc --workspace --exclude ludo-tauri
           --all-features --no-deps --locked
+
+  server:
+    name: Build server artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Linux audio dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libasound2-dev
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: linux-ci
       - name: Build reusable multiplayer server
         run: cargo build --locked -p ludo-server
       - uses: actions/upload-artifact@v7
@@ -62,10 +117,10 @@ jobs:
           if-no-files-found: error
           retention-days: 2
 
-  frontend:
-    name: Frontend quality
+  frontend-types:
+    name: Frontend TypeScript check
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: ./.github/actions/setup-node-pnpm
@@ -77,8 +132,36 @@ jobs:
         run: pnpm --dir apps/client install --frozen-lockfile
       - name: TypeScript
         run: pnpm --dir apps/client typecheck
+
+  frontend-unit:
+    name: Frontend unit & component tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-node-pnpm
+        with:
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          lockfile: apps/client/pnpm-lock.yaml
+      - name: Install locked dependencies
+        run: pnpm --dir apps/client install --frozen-lockfile
       - name: Unit and component tests
         run: pnpm --dir apps/client test
+
+  frontend-audit:
+    name: Frontend dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-node-pnpm
+        with:
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          lockfile: apps/client/pnpm-lock.yaml
+      - name: Install locked dependencies
+        run: pnpm --dir apps/client install --frozen-lockfile
       - name: Dependency audit
         run: pnpm --dir apps/client audit --audit-level high
 
@@ -99,16 +182,20 @@ jobs:
         with:
           toolchain: 1.97.1
           targets: wasm32-unknown-unknown
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
           shared-key: wasm-ci
           cache-bin: "true"
           cache-workspace-crates: "false"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install locked dependencies
         run: pnpm --dir apps/client install --frozen-lockfile
       - name: Install pinned WASM binding tool
-        run: command -v wasm-bindgen >/dev/null || cargo install wasm-bindgen-cli --version 0.2.126 --locked
+        run: |
+          if ! command -v wasm-bindgen >/dev/null; then
+            mkdir -p ~/.cargo/bin
+            curl -sSL https://github.com/rustwasm/wasm-bindgen/releases/download/0.2.126/wasm-bindgen-0.2.126-x86_64-unknown-linux-musl.tar.gz | tar -xz -C ~/.cargo/bin --strip-components=1 wasm-bindgen-0.2.126-x86_64-unknown-linux-musl/wasm-bindgen || cargo install wasm-bindgen-cli --version 0.2.126 --locked
+          fi
       - name: Build production web application
         run: node scripts/build-web.mjs --require-api-url --skip-typecheck
       - name: Enforce bundle budgets
@@ -140,15 +227,52 @@ jobs:
           cache-targets: "false"
           cache-bin: "true"
       - name: Install pinned audit tool
-        run: command -v cargo-audit >/dev/null || cargo install cargo-audit --version 0.22.2 --locked
+        run: |
+          if ! command -v cargo-audit >/dev/null; then
+            mkdir -p ~/.cargo/bin
+            curl -sSL https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv0.22.2/cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz | tar -xz -C ~/.cargo/bin --strip-components=1 || cargo install cargo-audit --version 0.22.2 --locked
+          fi
       # SQLx records its inactive, feature-gated MySQL driver in Cargo.lock.
       # PostgreSQL is the only SQLx driver in the resolved server build graph.
       - name: Audit resolved Rust dependencies
         run: cargo audit --ignore RUSTSEC-2023-0071
 
-  multiplayer:
-    name: PostgreSQL and multiplayer journey
-    needs: [rust, frontend, web]
+  db-tests:
+    name: PostgreSQL invariants and migrations
+    needs: [server]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ludo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ludo"
+          --health-interval 3s --health-timeout 3s --health-retries 15
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ludo
+      LUDO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ludo
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: linux-ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: ludo-server-linux
+          path: artifacts/server
+      - name: PostgreSQL invariants and migrations
+        run: >-
+          cargo nextest run --locked -p ludo-server
+          server::integration_tests --test-threads=1
+
+  e2e-journey:
+    name: Desktop and mobile browser journeys
+    needs: [server, web]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
@@ -174,9 +298,6 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           lockfile: apps/client/pnpm-lock.yaml
-      - uses: ./.github/actions/setup-rust
-        with:
-          shared-key: linux-ci
       - uses: actions/download-artifact@v8
         with:
           name: ludo-server-linux
@@ -187,14 +308,15 @@ jobs:
           path: apps/client/src/wasm/pkg
       - name: Install locked dependencies
         run: pnpm --dir apps/client install --frozen-lockfile
+      - name: Cache Playwright Browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('apps/client/pnpm-lock.yaml') }}
       - name: Install Chromium
         run: pnpm --dir apps/client exec playwright install --with-deps chromium
       - name: Build browser test application from verified WASM
         run: pnpm --dir apps/client exec vite build
-      - name: PostgreSQL invariants and migrations
-        run: >-
-          cargo test --locked -p ludo-server
-          server::integration_tests -- --test-threads=1
       - name: Start verified multiplayer server
         run: |
           chmod +x artifacts/server/ludo-server
@@ -229,23 +351,49 @@ jobs:
   gate:
     name: CI gate
     if: always()
-    needs: [rust, frontend, web, security, multiplayer]
+    needs:
+      - fmt
+      - clippy
+      - test
+      - doc
+      - server
+      - frontend-types
+      - frontend-unit
+      - frontend-audit
+      - web
+      - security
+      - db-tests
+      - e2e-journey
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - name: Require every CI lane
         env:
-          RUST_RESULT: ${{ needs.rust.result }}
-          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          FMT_RESULT: ${{ needs.fmt.result }}
+          CLIPPY_RESULT: ${{ needs.clippy.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          DOC_RESULT: ${{ needs.doc.result }}
+          SERVER_RESULT: ${{ needs.server.result }}
+          FRONTEND_TYPES_RESULT: ${{ needs.frontend-types.result }}
+          FRONTEND_UNIT_RESULT: ${{ needs.frontend-unit.result }}
+          FRONTEND_AUDIT_RESULT: ${{ needs.frontend-audit.result }}
           WEB_RESULT: ${{ needs.web.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
-          MULTIPLAYER_RESULT: ${{ needs.multiplayer.result }}
+          DB_TESTS_RESULT: ${{ needs.db-tests.result }}
+          E2E_JOURNEY_RESULT: ${{ needs.e2e-journey.result }}
         run: |
           for result in \
-            "$RUST_RESULT" \
-            "$FRONTEND_RESULT" \
+            "$FMT_RESULT" \
+            "$CLIPPY_RESULT" \
+            "$TEST_RESULT" \
+            "$DOC_RESULT" \
+            "$SERVER_RESULT" \
+            "$FRONTEND_TYPES_RESULT" \
+            "$FRONTEND_UNIT_RESULT" \
+            "$FRONTEND_AUDIT_RESULT" \
             "$WEB_RESULT" \
             "$SECURITY_RESULT" \
-            "$MULTIPLAYER_RESULT"; do
+            "$DB_TESTS_RESULT" \
+            "$E2E_JOURNEY_RESULT"; do
             test "$result" = success
           done

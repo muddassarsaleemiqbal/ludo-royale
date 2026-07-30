@@ -16,6 +16,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
   CI_RUN_ID: ${{ github.event.workflow_run.id }}
   CI_SHA: ${{ github.event.workflow_run.head_sha }}
   PNPM_VERSION: "11.17.0"
@@ -46,6 +49,10 @@ jobs:
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
+      - uses: ./.github/actions/setup-rust
+        if: steps.guard.outputs.skip != 'true'
+        with:
+          shared-key: xtask-ci
       - name: Calculate next patch version
         id: version
         if: steps.guard.outputs.skip != 'true'
@@ -61,10 +68,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS universal DMG
+          - name: macOS ARM64 DMG
             os: macos-14
-            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            args: --target universal-apple-darwin --bundles dmg
+            rust-targets: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles dmg
+          - name: macOS Intel DMG
+            os: macos-14
+            rust-targets: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --bundles dmg
           - name: Windows x64 installers
             os: windows-2025
             rust-targets: ""
@@ -72,6 +83,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       APP_VERSION: ${{ needs.prepare.outputs.version }}
+      CARGO_PROFILE_RELEASE_LTO: "thin"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -87,6 +100,11 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           lockfile: apps/tauri/pnpm-lock.yaml
+      - name: Cache Tauri Node Modules
+        uses: actions/cache@v4
+        with:
+          path: apps/tauri/node_modules
+          key: tauri-node-${{ runner.os }}-${{ hashFiles('apps/tauri/pnpm-lock.yaml') }}
       - name: Verify web artifact provenance
         shell: bash
         run: node scripts/ops/artifact-manifest.mjs verify apps/client/dist "$CI_SHA"
@@ -94,6 +112,7 @@ jobs:
         with:
           toolchain: 1.97.1
           targets: ${{ matrix.rust-targets }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
           shared-key: desktop-${{ matrix.os }}
