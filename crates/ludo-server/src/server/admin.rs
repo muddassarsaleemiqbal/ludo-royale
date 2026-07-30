@@ -100,7 +100,9 @@ pub(super) async fn clear_all_data(
 
     tx.commit().await?;
 
-    Ok(Json(serde_json::json!({"status":"ok","message":"All data cleared"})))
+    Ok(Json(
+        serde_json::json!({"status":"ok","message":"All data cleared"}),
+    ))
 }
 
 fn authorize<'a>(state: &AppState, headers: &'a HeaderMap) -> Result<&'a str, ApiError> {
