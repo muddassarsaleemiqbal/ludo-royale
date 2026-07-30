@@ -23,10 +23,18 @@ runs:
         rustc --version --verbose
         cargo --version
 
-    - name: Install mold fast linker and cargo-nextest
+    - name: Install cargo-nextest
       uses: taiki-e/install-action@v2
       with:
-        tool: mold,cargo-nextest
+        tool: cargo-nextest
+
+    - name: Install mold fast linker on Linux
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        if ! command -v mold >/dev/null; then
+          sudo apt-get update && sudo apt-get install --yes --no-install-recommends mold clang
+        fi
 
     - name: Set up sccache
       uses: mozilla-actions/sccache-action@v0.0.9
