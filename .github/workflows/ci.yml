@@ -20,7 +20,6 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   RUST_BACKTRACE: "1"
-  RUSTC_WRAPPER: sccache
   SCCACHE_GHA_ENABLED: "true"
   PNPM_VERSION: "11.17.0"
   NODE_VERSION: "22"
@@ -53,6 +52,8 @@ jobs:
         with:
           shared-key: linux-ci
       - name: Clippy
+        env:
+          RUSTC_WRAPPER: sccache
         run: >-
           cargo clippy --workspace --exclude ludo-tauri
           --all-targets --all-features --locked -- -D warnings
@@ -71,6 +72,8 @@ jobs:
         with:
           shared-key: linux-ci
       - name: Workspace tests
+        env:
+          RUSTC_WRAPPER: sccache
         run: >-
           cargo nextest run --workspace --exclude ludo-tauri
           --all-targets --all-features --locked
@@ -91,6 +94,7 @@ jobs:
       - name: Documentation
         env:
           RUSTDOCFLAGS: -D warnings
+          RUSTC_WRAPPER: sccache
         run: >-
           cargo doc --workspace --exclude ludo-tauri
           --all-features --no-deps --locked
@@ -109,6 +113,8 @@ jobs:
         with:
           shared-key: linux-ci
       - name: Build reusable multiplayer server
+        env:
+          RUSTC_WRAPPER: sccache
         run: cargo build --locked -p ludo-server
       - uses: actions/upload-artifact@v7
         with:
@@ -197,6 +203,8 @@ jobs:
             curl -sSL https://github.com/rustwasm/wasm-bindgen/releases/download/0.2.126/wasm-bindgen-0.2.126-x86_64-unknown-linux-musl.tar.gz | tar -xz -C ~/.cargo/bin --strip-components=1 wasm-bindgen-0.2.126-x86_64-unknown-linux-musl/wasm-bindgen || cargo install wasm-bindgen-cli --version 0.2.126 --locked
           fi
       - name: Build production web application
+        env:
+          RUSTC_WRAPPER: sccache
         run: node scripts/build-web.mjs --require-api-url --skip-typecheck
       - name: Enforce bundle budgets
         run: node scripts/ops/performance-budget.mjs
@@ -227,6 +235,8 @@ jobs:
           cache-targets: "false"
           cache-bin: "true"
       - name: Install pinned audit tool
+        env:
+          RUSTC_WRAPPER: sccache
         run: |
           if ! command -v cargo-audit >/dev/null; then
             mkdir -p ~/.cargo/bin
@@ -235,6 +245,8 @@ jobs:
       # SQLx records its inactive, feature-gated MySQL driver in Cargo.lock.
       # PostgreSQL is the only SQLx driver in the resolved server build graph.
       - name: Audit resolved Rust dependencies
+        env:
+          RUSTC_WRAPPER: sccache
         run: cargo audit --ignore RUSTSEC-2023-0071
 
   db-tests:
