@@ -3,9 +3,9 @@
 use super::{
     AblyConfig, AppState, Arc, HashMap, HeaderName, MakeRequestUuid, Metrics, Mutex, PgPoolOptions,
     PropagateRequestIdLayer, Router, RwLock, ServerConfig, SetRequestIdLayer, TraceLayer,
-    ably_token, admin_delete_user, admin_overview, cancel_deletion, cors_layer, delete, env, get,
-    health_live, health_ready, login, logout, me, metrics, post, register, request_deletion,
-    run_match_supervisor, run_outbox, websocket,
+    ably_token, admin_delete_user, admin_overview, cancel_deletion, clear_all_data, cors_layer,
+    delete, env, get, health_live, health_ready, login, logout, me, metrics, post, register,
+    request_deletion, run_match_supervisor, run_outbox, websocket,
 };
 
 pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -78,6 +78,7 @@ fn router(state: AppState) -> Result<Router, Box<dyn std::error::Error>> {
         )
         .route("/api/admin/overview", get(admin_overview))
         .route("/api/admin/users/{user_id}", delete(admin_delete_user))
+        .route("/api/admin/clear-all", delete(clear_all_data))
         .route("/api/ably/token", get(ably_token))
         .route("/api/online", get(websocket))
         .layer(cors_layer(&state.config)?)

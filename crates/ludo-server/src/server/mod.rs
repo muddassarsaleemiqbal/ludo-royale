@@ -61,7 +61,7 @@ mod realtime;
 mod social;
 mod support;
 
-use admin::{admin_delete_user, admin_overview};
+use admin::{admin_delete_user, admin_overview, clear_all_data};
 use auth::{
     authenticate_header, authenticate_token, cancel_deletion, login, logout, me, now, register,
     request_deletion, websocket_token,
