@@ -145,3 +145,7 @@ The IDs can be copied from the Vercel project's `.vercel/project.json` after
 running `vercel link` locally. No Vercel build command is needed: GitHub builds
 the Rust/WASM application once, then Vercel and both Tauri installer jobs reuse
 the resulting static `apps/client/dist` directory.
+
+
+
+
