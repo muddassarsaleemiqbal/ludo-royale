@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMediaQuery } from "./lib/use-media-query";
 import {
   Award,
   Bot,
@@ -341,6 +342,7 @@ export default function App() {
   const [homeKey, setHomeKey] = useState<string | null>(null);
   const preferences = usePreferences();
   const previousModel = useRef<typeof model>(null);
+  const isMobile = useMediaQuery("(max-width: 960px)");
 
   useEffect(() => {
     void gameStore.initialize();
@@ -532,7 +534,7 @@ export default function App() {
               <span title="Tokens on shield cells cannot be captured">Shield marks protect your token from capture.</span>
             </div>
           </div>
-          {online.model && <div className="social-panel">
+          {online.model && !isMobile && <div className="social-panel">
             <div className="social-title"><MessageCircle /><strong>Match feed</strong>{online.spectating && <span>Watching</span>}</div>
             <div className="event-feed" aria-live="polite">{online.events.length ? online.events.map(event => <div className={`event-${event.kind}`} key={event.id}>{event.message}</div>) : <span>Moves, reactions, and chat appear here.</span>}</div>
             <div className="reaction-row">{["👍","👏","😮","😂","🔥","👑"].map(emoji => <button key={emoji} aria-label={`React ${emoji}`} onClick={() => onlineStore.react(emoji)}>{emoji}</button>)}</div>
@@ -546,7 +548,7 @@ export default function App() {
               <PlayerCard key={player.id} player={player} compact presence={online.presence[player.id]} />
             ))}
           </div>
-          {online.model && <div className="mobile-social-panel social-panel">
+          {online.model && isMobile && <div className="mobile-social-panel social-panel">
             <div className="social-title"><MessageCircle /><strong>Match feed</strong>{online.spectating && <span>Watching</span>}</div>
             <div className="event-feed" aria-live="polite">{online.events.length ? online.events.map(event => <div className={`event-${event.kind}`} key={event.id}>{event.message}</div>) : <span>Moves, reactions, and chat appear here.</span>}</div>
             <div className="reaction-row">{["👍","👏","😮","😂","🔥","👑"].map(emoji => <button key={emoji} aria-label={`React ${emoji}`} onClick={() => onlineStore.react(emoji)}>{emoji}</button>)}</div>
