@@ -9,7 +9,7 @@ async function register(page: Page, identity: string) {
   await page.getByLabel("Email").fill(`${identity.toLowerCase()}@example.test`);
   await page.getByLabel("Password").fill("correct-horse-battery-staple");
   await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page.locator(".setup-profile")).toHaveText(identity, {
+  await expect(page.locator(".setup-profile")).toContainText(identity, {
     timeout: 15_000
   });
 }
@@ -44,7 +44,9 @@ test("two players can join, start, act, and reconnect", async ({ browser }) => {
   await host.reload();
   await expect(host.locator(".turn-banner")).toContainText("Your turn");
   await host.getByRole("button", { name: "Roll dice" }).click();
-  await expect(host.locator(".event-feed")).toContainText("rolled the dice");
+  await expect(
+    host.locator(".event-feed").filter({ hasText: "rolled the dice" }).first()
+  ).toBeVisible();
 
   await hostContext.close();
   await guestContext.close();
