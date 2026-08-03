@@ -102,7 +102,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           lockfile: apps/tauri/pnpm-lock.yaml
       - name: Cache Tauri Node Modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: apps/tauri/node_modules
           key: tauri-node-${{ runner.os }}-${{ hashFiles('apps/tauri/pnpm-lock.yaml') }}

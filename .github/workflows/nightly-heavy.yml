@@ -152,7 +152,7 @@ jobs:
       - name: Install locked dependencies
         run: pnpm --dir apps/client install --frozen-lockfile
       - name: Cache Playwright Browsers
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('apps/client/pnpm-lock.yaml') }}
