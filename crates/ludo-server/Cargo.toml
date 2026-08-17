@@ -9,7 +9,7 @@ license.workspace = true
 argon2 = "0.5"
 axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
-jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 ludo-ai = { path = "../ludo-ai", default-features = false }
 ludo-domain = { path = "../ludo-domain" }
 ludo-presentation = { path = "../ludo-presentation" }
@@ -18,11 +18,11 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "macros", "migrate"] }
+sha2 = "0.11"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "macros", "migrate"] }
 thiserror.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
-tower-http = { version = "0.6", features = ["cors", "request-id", "trace"] }
+tower-http = { version = "0.7", features = ["cors", "request-id", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde", "v4"] }
