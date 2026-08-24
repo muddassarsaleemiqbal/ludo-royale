@@ -26,7 +26,7 @@ description = "A fast, native, feature-complete Ludo board game"
 [workspace.dependencies]
 flume = "0.12"
 if-addrs = "0.15"
-mdns-sd = "0.20.2"
+mdns-sd = "0.21.0"
 rand = "0.10"
 rayon = "1.11"
 rodio = { version = "0.22.2", default-features = false, features = ["playback"] }
